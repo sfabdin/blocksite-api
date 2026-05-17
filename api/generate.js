@@ -7,9 +7,15 @@ function buildPrompt(p) {
   const { businessName, businessType, industry, tagline, description, about, vibe, pages, phone, email, address, city, hours, typeSpecific, photos = [] } = p;
   const typeLabel = businessType === "restaurant" ? "Restaurant / Food Business" : businessType === "retail" ? "General Store / Retail" : "Specialty Service Business";
   console.log(`Photos received: ${photos.length}, total payload size: ${JSON.stringify(p).length} chars`);
-  const photoInstructions = photos.length > 0
-    ? `The owner uploaded ${photos.length} real photo(s). Embed them in the gallery as <img> tags with these exact base64 data URLs:\n${photos.slice(0,4).map((url, i) => `Photo ${i+1}: src="${url}"`).join("\n")}`
-    : `No photos uploaded. Use styled placeholder divs with emoji.`;
+  const photoCount = p.photoCount || 0;
+  console.log(`Photo count: ${photoCount}, payload: ${JSON.stringify(p).length} chars`);
+  const photoInstructions = photoCount > 0
+    ? `The owner uploaded ${photoCount} photo(s). Use these EXACT placeholder strings as image src values (they get replaced with real photos after generation):
+- Hero section background image: src="HERO_PHOTO_PLACEHOLDER"
+${Array.from({length: Math.min(photoCount, 4)}, (_, i) => `- Gallery photo ${i+1}: src="PHOTO_${i+1}_PLACEHOLDER"`).join('
+')}
+These placeholder strings MUST appear exactly as written in your HTML.`
+    : `No photos uploaded. Use warm emoji or CSS gradient placeholders.`;
   const typeContent = businessType === "restaurant"
     ? `MENU SECTION: Beautiful menu section grouped by category using the details provided.`
     : businessType === "retail"
