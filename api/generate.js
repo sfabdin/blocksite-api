@@ -1,212 +1,157 @@
 // api/generate.js - Vercel serverless function
-// 60 second max duration - no inactivity timeout issues
+// Max duration: 300 seconds (set in vercel.json)
 
-const https = require("https");
+export default async function handler(req, res) {
+  // CORS
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-function buildPrompt(p) {
-  const { businessName, businessType, industry, tagline, description, about, vibe, pages, phone, email, address, city, hours, typeSpecific, photos = [] } = p;
-  const typeLabel = businessType === "restaurant" ? "Restaurant / Food Business" : businessType === "retail" ? "General Store / Retail" : "Specialty Service Business";
-  console.log(`Photos received: ${photos.length}, total payload size: ${JSON.stringify(p).length} chars`);
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  if (!anthropicKey) return res.status(500).json({ error: "ANTHROPIC_API_KEY not configured" });
+
+  const p = req.body;
+  const orderId = `BS-${Date.now()}-${Math.random().toString(36).slice(2,6).toUpperCase()}`;
   const photoCount = p.photoCount || 0;
-  console.log(`Photo count: ${photoCount}, payload: ${JSON.stringify(p).length} chars`);
+
+  console.log(`Generating for: ${p.businessName}, photos: ${photoCount}`);
+
+  const typeLabel = p.businessType === "restaurant" ? "Restaurant / Food Business"
+    : p.businessType === "retail" ? "General Store / Retail"
+    : "Specialty Service Business";
+
+  const typeContent = p.businessType === "restaurant"
+    ? `MENU SECTION (id="menu"): Beautiful menu grouped by category. Keep it concise — 3-4 items per category max. No invented prices.`
+    : p.businessType === "retail"
+    ? `SPECIALS SECTION (id="specials"): Bold Sales & Specials cards using info provided.`
+    : `SERVICES SECTION (id="services"): Clean services grid with clear booking CTA.`;
+
   const photoInstructions = photoCount > 0
-    ? `The owner uploaded ${photoCount} photo(s). Use these EXACT placeholder strings as image src values (they get replaced with real photos after generation):
-- Hero section background image: src="HERO_PHOTO_PLACEHOLDER"
-${Array.from({length: Math.min(photoCount, 4)}, (_, i) => `- Gallery photo ${i+1}: src="PHOTO_${i+1}_PLACEHOLDER"`).join('
-')}
-These placeholder strings MUST appear exactly as written in your HTML.`
-    : `No photos uploaded. Use warm emoji or CSS gradient placeholders.`;
-  const typeContent = businessType === "restaurant"
-    ? `MENU SECTION: Beautiful menu section grouped by category using the details provided.`
-    : businessType === "retail"
-    ? `SPECIALS SECTION: Bold Sales and Specials section with featured deal cards.`
-    : `SERVICES SECTION: Clean services grid with pricing if provided and clear booking CTA.`;
+    ? `The owner uploaded ${photoCount} photo(s). Use these EXACT placeholder strings in your HTML:
+- Hero background: background-image: url('HERO_PHOTO_PLACEHOLDER')
+- Gallery photos: <img src="PHOTO_1_PLACEHOLDER">, <img src="PHOTO_2_PLACEHOLDER"> etc.
+These MUST appear exactly as written — they get replaced with real photos after generation.`
+    : `No photos provided. Use warm CSS gradients and emoji as visual placeholders.`;
 
-  return `You are a world-class web designer specializing in community-rooted small business websites. Generate a complete, beautiful, self-contained HTML website.
+  const mapsUrl = encodeURIComponent(`${p.address || ""} ${p.city || ""}`.trim());
 
-BUSINESS DETAILS:
-- Name: ${businessName || "Local Business"}
+  const prompt = `You are a world-class web designer. Build a complete, beautiful, mobile-first, self-contained single-page HTML website for this small business. Everything must be in ONE HTML file.
+
+BUSINESS:
+- Name: ${p.businessName || "Local Business"}
 - Type: ${typeLabel}
-- Industry: ${industry || "small business"}
-- Tagline: ${tagline || "Quality, community, care"}
-- Description: ${description || "A trusted local business."}
-- About: ${about || ""}
-- City: ${city || "our community"}
-- Phone: ${phone || ""} | Email: ${email || ""} | Address: ${address || ""}
-- Hours: ${hours || ""}
-- Pages: ${(pages || []).join(", ")}
+- Industry: ${p.industry || "small business"}
+- Tagline: ${p.tagline || ""}
+- Description: ${p.description || ""}
+- About: ${p.about || ""}
+- City: ${p.city || "our community"}
+- Phone: ${p.phone || ""} | Email: ${p.email || ""} | Address: ${p.address || ""}
+- Hours: ${p.hours || ""}
 
-TYPE-SPECIFIC CONTENT:
-${typeSpecific || ""}
+CONTENT:
+${p.typeSpecific || ""}
 
-VIBE: "${vibe || "Warm, welcoming, community-first"}"
-
-Choose a distinctive color palette, font pairing, and layout that truly matches this vibe.
+VIBE: "${p.vibe || "Warm, welcoming, community-first"}"
+Pick colors, fonts, and layout that genuinely match this vibe. Be distinctive — not generic.
 
 PHOTOS: ${photoInstructions}
 
-REQUIREMENTS:
-1. SINGLE PAGE APP: Everything must be on ONE single HTML page with smooth scroll sections. Nav links scroll to sections using anchor IDs (e.g. href="#menu", href="#about", href="#contact"). NO separate pages, NO page reloads. Every nav item must have a corresponding section on the page.
-2. COMMUNITY FEEL: Warm, neighborhood-rooted, human. Never corporate. Include a "Rooted in ${city || "Our Community"}" section.
-3. HERO: Warm welcome mat. Visitor feels "this place is for me."
-4. NAV: Fixed navbar, smooth scroll to sections, working mobile hamburger menu with JavaScript toggle. Every nav link must point to an existing section ID on the page.
-5. ${typeContent}
-6. CONTACT SECTION: Must include ALL of these:
-   - A contact form with netlify attribute on the form tag
-   - Phone, email, address, and hours displayed warmly
-   - A Google Maps embed using this iframe (replace ADDRESS with the actual address URL-encoded):
-     <iframe src="https://maps.google.com/maps?q=${encodeURIComponent(address || city || "Mount Vernon, NY")}&output=embed" width="100%" height="300" style="border:0;border-radius:12px;" allowfullscreen="" loading="lazy"></iframe>
-7. FOOTER: Personal and warm. Business name, tagline, contact info, nav links.
-8. MOBILE FIRST: Fully responsive. Single column on mobile, grid on desktop. Test every section.
-9. HAMBURGER MENU: Must work with inline JavaScript. When hamburger is clicked, mobile nav slides in. Clicking a nav link closes the menu.
-10. FONTS: https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,700&family=DM+Sans:wght@300;400;500;600&family=Fraunces:ital,wght@0,400;0,700;1,400&family=Lora:ital,wght@0,400;0,600;1,400&display=swap
-11. No external JS libraries. One self-contained file with all CSS and JS inline.
-12. QUALITY BAR: Looks like a $2,000 boutique agency site. Hover states, transitions, spacing — every detail matters.
-13. CRITICAL — ALL SECTIONS REQUIRED: Build these sections IN THIS EXACT ORDER. Do not stop until ALL are complete:
-    <section id="home"> — Hero with background photo if available
-    <section id="menu"> — Menu (keep it concise — 2-3 items per category max)
-    <section id="about"> — About Us with photos
-    <section id="hours-location"> — Hours + address + this exact Google Maps iframe:
-      <iframe src="https://maps.google.com/maps?q=${encodeURIComponent((address || '') + ' ' + (city || ''))}&output=embed" width="100%" height="250" style="border:0;border-radius:12px;margin-top:1rem;" allowfullscreen="" loading="lazy"></iframe>
-    <section id="contact"> — Contact form (with netlify attribute) + phone + email
-    If you are running low on space, make each section SHORTER but include ALL sections. Never skip a section.
-14. PHOTOS: Use photos intelligently:
-    - First photo: use as hero background image (CSS background-image with overlay)
-    - Remaining photos: show in about section or gallery grid
-    - If a photo looks like a logo, use it in the nav instead of text
-15. PRICES: NEVER invent prices. Only show prices if explicitly provided. Use descriptions only.
+REQUIRED SECTIONS — build ALL of these, in order, with these EXACT IDs:
+1. <section id="home"> — Hero. Use HERO_PHOTO_PLACEHOLDER as background-image if photos available. Warm welcome, tagline, CTA button.
+2. ${typeContent}
+3. <section id="about"> — Story, warmth, community connection. Show PHOTO_1_PLACEHOLDER and PHOTO_2_PLACEHOLDER if photos available.
+4. <section id="hours-location"> — Hours displayed warmly + full address + this Google Maps embed:
+   <iframe src="https://maps.google.com/maps?q=${mapsUrl}&output=embed" width="100%" height="300" style="border:0;border-radius:12px;margin-top:1rem;" allowfullscreen loading="lazy"></iframe>
+5. <section id="contact"> — Contact form with netlify attribute on <form> tag. Show phone, email, address beside it.
 
-OUTPUT: Raw HTML only. Start with <!DOCTYPE html>. No markdown, no explanation, no code fences.`;
-}
+ROOTED SECTION: Include a "Rooted in ${p.city || "Our Community"}" section between about and hours.
 
-async function sendEmail(to, subject, html, attachments, resendKey, fromEmail) {
-  if (!resendKey) return;
+NAV: Fixed navbar. Links: Home (#home), Menu/Services (#menu or #services or #specials), About (#about), Hours & Location (#hours-location), Contact (#contact). Mobile hamburger with JS toggle. Clicking nav link closes menu on mobile.
+
+FOOTER: Warm, personal. Business name, tagline, nav links, contact info.
+
+FONTS: https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,700&family=DM+Sans:wght@300;400;500;600&family=Fraunces:ital,wght@0,400;0,700;1,400&family=Lora:ital,wght@0,400;0,600;1,400&display=swap
+
+RULES:
+- Mobile first. Single column on mobile, grid on desktop.
+- No external JS libraries. All JS inline.
+- Hover states, smooth transitions, beautiful spacing.
+- NEVER invent prices. Only show prices if given.
+- Quality bar: looks like a $2,000 boutique agency site.
+- If running low on tokens, keep each section shorter but NEVER skip a section.
+
+OUTPUT: Raw HTML only. Start with <!DOCTYPE html>. No markdown, no code fences, no explanation.`;
+
   try {
-    const payload = {
-      from: fromEmail || "BlockSite <hello@blocksitebuilder.com>",
-      to, subject, html,
-      ...(attachments?.length ? { attachments } : {}),
-    };
-    const r = await fetch("https://api.resend.com/emails", {
+    const body = JSON.stringify({
+      model: "claude-sonnet-4-5",
+      max_tokens: 16000,
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${resendKey}` },
-      body: JSON.stringify(payload),
-    });
-    console.log("Email sent:", r.status);
-  } catch(e) {
-    console.log("Email error:", e.message);
-  }
-}
-
-export default async function handler(req, res) {
-  // CORS - allow all origins
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  res.setHeader("Access-Control-Max-Age", "86400");
-
-  if (req.method === "OPTIONS") {
-    res.status(200).end();
-    return;
-  }
-
-  if (req.method !== "POST") {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    return res.status(405).json({ error: "Method not allowed" });
-  }
-
-  const anthropicKey = process.env.ANTHROPIC_API_KEY;
-  if (!anthropicKey) {
-    return res.status(500).json({ error: "ANTHROPIC_API_KEY not configured" });
-  }
-
-  const formData = req.body;
-  const orderId = `BS-${Date.now()}-${Math.random().toString(36).slice(2,6).toUpperCase()}`;
-
-  try {
-    const prompt = buildPrompt(formData);
-
-    // Call Claude - Vercel gives us 60 seconds, no inactivity timeout
-    const html = await new Promise((resolve, reject) => {
-      const body = JSON.stringify({
-        model: "claude-sonnet-4-5",
-        max_tokens: 8000,
-        messages: [{ role: "user", content: prompt }],
-      });
-
-      const request = https.request({
-        hostname: "api.anthropic.com",
-        path: "/v1/messages",
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(body),
-          "x-api-key": anthropicKey,
-          "anthropic-version": "2023-06-01",
-        },
-      }, (response) => {
-        let data = "";
-        response.on("data", c => { data += c; });
-        response.on("end", () => {
-          try {
-            if (response.statusCode !== 200) {
-              reject(new Error(`Anthropic ${response.statusCode}: ${data.slice(0,300)}`));
-              return;
-            }
-            const parsed = JSON.parse(data);
-            if (parsed.error) { reject(new Error(parsed.error.message)); return; }
-            const text = parsed.content?.find(b => b.type === "text")?.text || "";
-            const cleanHtml = text.replace(/^```html?\n?/i, "").replace(/\n?```$/m, "").trim();
-            if (!cleanHtml || cleanHtml.length < 200) { reject(new Error("Empty response from AI")); return; }
-            console.log(`Claude used ${parsed.usage?.output_tokens || 0} output tokens, HTML length: ${cleanHtml.length} chars`);
-            resolve(cleanHtml);
-          } catch(e) { reject(e); }
-        });
-      });
-      request.on("error", reject);
-      request.write(body);
-      request.end();
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": anthropicKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body,
     });
 
-    // Return HTML as base64 to avoid encoding issues with emoji/special chars
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error("Anthropic error:", errText.slice(0, 300));
+      return res.status(500).json({ error: `Anthropic error ${response.status}` });
+    }
+
+    const data = await response.json();
+    const text = data.content?.find(b => b.type === "text")?.text || "";
+    const html = text.replace(/^```html?\n?/i, "").replace(/\n?```$/m, "").trim();
+
+    console.log(`Done. Tokens: ${data.usage?.output_tokens}, HTML: ${html.length} chars`);
+
+    if (!html || html.length < 500) {
+      return res.status(500).json({ error: "AI returned empty response" });
+    }
+
+    // Return as base64 to avoid encoding issues
     const htmlB64 = Buffer.from(html, "utf8").toString("base64");
     res.status(200).json({ htmlB64, orderId });
 
-    // Send emails after response (fire and forget)
-    const ownerEmail = process.env.OWNER_EMAIL;
+    // Fire-and-forget emails
     const resendKey = process.env.RESEND_API_KEY;
-    const fromEmail = process.env.FROM_EMAIL;
+    const ownerEmail = process.env.OWNER_EMAIL;
+    const fromEmail = process.env.FROM_EMAIL || "BlockSite <hello@blocksitebuilder.com>";
 
-    if (ownerEmail && resendKey) {
-      const bizSlug = (formData.businessName || "website").toLowerCase().replace(/\s+/g, "-");
-      sendEmail(
-        ownerEmail,
-        `[BlockSite] ${formData.businessName || "New site"} · ${orderId}`,
-        `<div style="font-family:sans-serif;padding:24px">
-          <h2>New BlockSite Preview</h2>
-          <p><strong>Order ID:</strong> ${orderId}</p>
-          <p><strong>Business:</strong> ${formData.businessName}</p>
-          <p><strong>Customer:</strong> ${formData.email || "—"}</p>
-          <p><strong>City:</strong> ${formData.city || "—"}</p>
-          <p><strong>Vibe:</strong> "${formData.vibe || "—"}"</p>
-          <p>Full HTML attached.</p>
-        </div>`,
-        [{ filename: `${bizSlug}.html`, content: Buffer.from(html).toString("base64") }],
-        resendKey, fromEmail
-      ).catch(e => console.log("Owner email error:", e.message));
+    if (resendKey && ownerEmail) {
+      const bizSlug = (p.businessName || "website").toLowerCase().replace(/\s+/g, "-");
+      fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${resendKey}` },
+        body: JSON.stringify({
+          from: fromEmail,
+          to: ownerEmail,
+          subject: `[BlockSite] ${p.businessName || "New site"} · ${orderId}`,
+          html: `<div style="font-family:sans-serif;padding:24px"><h2>New BlockSite Preview</h2><p><strong>Order:</strong> ${orderId}</p><p><strong>Business:</strong> ${p.businessName}</p><p><strong>Customer:</strong> ${p.email || "—"}</p><p><strong>City:</strong> ${p.city || "—"}</p><p><strong>Vibe:</strong> "${p.vibe || "—"}"</p></div>`,
+          attachments: [{ filename: `${bizSlug}.html`, content: htmlB64 }],
+        }),
+      }).catch(e => console.log("Owner email error:", e.message));
     }
 
-    if (formData.email && resendKey) {
-      sendEmail(
-        formData.email,
-        `Your BlockSite preview is ready — ${formData.businessName || "Your Business"}`,
-        `<div style="font-family:sans-serif;padding:24px;max-width:600px">
-          <h2>Your site preview is ready!</h2>
-          <p>Head back to blocksitebuilder.com to view your preview and choose your package.</p>
-          <p><strong>Order ID:</strong> ${orderId}</p>
-        </div>`,
-        [], resendKey, fromEmail
-      ).catch(e => console.log("Customer email error:", e.message));
+    if (resendKey && p.email) {
+      fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${resendKey}` },
+        body: JSON.stringify({
+          from: fromEmail,
+          to: p.email,
+          subject: `Your BlockSite preview is ready — ${p.businessName || "Your Business"}`,
+          html: `<div style="font-family:sans-serif;padding:24px;max-width:600px"><h2>Your site is ready! 🎉</h2><p>Head back to <a href="https://blocksitebuilder.com">blocksitebuilder.com</a> to view your preview.</p><p><strong>Order ID:</strong> ${orderId}</p></div>`,
+        }),
+      }).catch(e => console.log("Customer email error:", e.message));
     }
 
   } catch (err) {
