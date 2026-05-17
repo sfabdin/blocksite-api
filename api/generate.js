@@ -151,6 +151,7 @@ export default async function handler(req, res) {
             const text = parsed.content?.find(b => b.type === "text")?.text || "";
             const cleanHtml = text.replace(/^```html?\n?/i, "").replace(/\n?```$/m, "").trim();
             if (!cleanHtml || cleanHtml.length < 200) { reject(new Error("Empty response from AI")); return; }
+            console.log(`Claude used ${parsed.usage?.output_tokens || 0} output tokens, HTML length: ${cleanHtml.length} chars`);
             resolve(cleanHtml);
           } catch(e) { reject(e); }
         });
