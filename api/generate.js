@@ -56,14 +56,19 @@ REQUIREMENTS:
 10. FONTS: https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,700&family=DM+Sans:wght@300;400;500;600&family=Fraunces:ital,wght@0,400;0,700;1,400&family=Lora:ital,wght@0,400;0,600;1,400&display=swap
 11. No external JS libraries. One self-contained file with all CSS and JS inline.
 12. QUALITY BAR: Looks like a $2,000 boutique agency site. Hover states, transitions, spacing — every detail matters.
-13. SECTIONS REQUIRED: You MUST build ALL of these sections in order, each with the exact ID shown:
-    - <section id="home"> — Hero section
-    - <section id="menu"> — Full menu with categories
-    - <section id="about"> — About Us / story
-    - <section id="hours-location"> — Hours, address, and Google Maps embed
-    - <section id="contact"> — Contact form + contact info
-    Every section in the Pages list MUST have a corresponding HTML section on the page. Do not skip any.
-14. PRICES: NEVER make up prices. If no prices were provided, do NOT show any dollar amounts. Use descriptions only.
+13. CRITICAL — ALL SECTIONS REQUIRED: Build these sections IN THIS EXACT ORDER. Do not stop until ALL are complete:
+    <section id="home"> — Hero with background photo if available
+    <section id="menu"> — Menu (keep it concise — 2-3 items per category max)
+    <section id="about"> — About Us with photos
+    <section id="hours-location"> — Hours + address + this exact Google Maps iframe:
+      <iframe src="https://maps.google.com/maps?q=${encodeURIComponent((address || '') + ' ' + (city || ''))}&output=embed" width="100%" height="250" style="border:0;border-radius:12px;margin-top:1rem;" allowfullscreen="" loading="lazy"></iframe>
+    <section id="contact"> — Contact form (with netlify attribute) + phone + email
+    If you are running low on space, make each section SHORTER but include ALL sections. Never skip a section.
+14. PHOTOS: Use photos intelligently:
+    - First photo: use as hero background image (CSS background-image with overlay)
+    - Remaining photos: show in about section or gallery grid
+    - If a photo looks like a logo, use it in the nav instead of text
+15. PRICES: NEVER invent prices. Only show prices if explicitly provided. Use descriptions only.
 
 OUTPUT: Raw HTML only. Start with <!DOCTYPE html>. No markdown, no explanation, no code fences.`;
 }
