@@ -73,22 +73,23 @@ REQUIREMENTS:
 OUTPUT: Raw HTML only. Start with <!DOCTYPE html>. No markdown, no explanation, no code fences.`;
 }
 
-function sendEmail(to, subject, html, attachments, resendKey, fromEmail) {
-  if (!resendKey) return Promise.resolve();
-  const payload = JSON.stringify({
-    from: fromEmail || "BlockSite <hello@blocksitebuilder.com>",
-    to, subject, html,
-    ...(attachments?.length ? { attachments } : {})
-  });
-  return new Promise((resolve) => {
-    const req = https.request({
-      hostname: "api.resend.com", path: "/emails", method: "POST",
-      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload), "Authorization": `Bearer ${resendKey}` },
-    }, (res) => { res.resume(); res.on("end", resolve); });
-    req.on("error", resolve);
-    req.write(payload);
-    req.end();
-  });
+async function sendEmail(to, subject, html, attachments, resendKey, fromEmail) {
+  if (!resendKey) return;
+  try {
+    const payload = {
+      from: fromEmail || "BlockSite <hello@blocksitebuilder.com>",
+      to, subject, html,
+      ...(attachments?.length ? { attachments } : {}),
+    };
+    const r = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${resendKey}` },
+      body: JSON.stringify(payload),
+    });
+    console.log("Email sent:", r.status);
+  } catch(e) {
+    console.log("Email error:", e.message);
+  }
 }
 
 export default async function handler(req, res) {
@@ -161,8 +162,9 @@ export default async function handler(req, res) {
       request.end();
     });
 
-    // Return HTML immediately — don't wait for emails
-    res.status(200).json({ html, orderId });
+    // Return HTML as base64 to avoid encoding issues with emoji/special chars
+    const htmlB64 = Buffer.from(html, "utf8").toString("base64");
+    res.status(200).json({ htmlB64, orderId });
 
     // Send emails after response (fire and forget)
     const ownerEmail = process.env.OWNER_EMAIL;
