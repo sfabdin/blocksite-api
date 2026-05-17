@@ -39,16 +39,23 @@ Choose a distinctive color palette, font pairing, and layout that truly matches 
 PHOTOS: ${photoInstructions}
 
 REQUIREMENTS:
-1. COMMUNITY FEEL: Warm, neighborhood-rooted, human. Never corporate. Include Rooted in ${city || "Our Community"} section.
-2. HERO: Warm welcome mat. Visitor feels this place is for me.
-3. NAV: Fixed, smooth scroll, mobile hamburger menu.
-4. ${typeContent}
-5. CONTACT: Form with netlify attribute on the form tag. Show contact info beside it.
-6. FOOTER: Personal and warm.
-7. MOBILE FIRST: Perfect on a phone in portrait mode.
-8. FONTS: https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,700&family=DM+Sans:wght@300;400;500;600&family=Fraunces:ital,wght@0,400;0,700;1,400&family=Lora:ital,wght@0,400;0,600;1,400&display=swap
-9. No external JS. One self-contained file.
-10. QUALITY BAR: Looks like a $2,000 boutique agency site.
+1. SINGLE PAGE APP: Everything must be on ONE single HTML page with smooth scroll sections. Nav links scroll to sections using anchor IDs (e.g. href="#menu", href="#about", href="#contact"). NO separate pages, NO page reloads. Every nav item must have a corresponding section on the page.
+2. COMMUNITY FEEL: Warm, neighborhood-rooted, human. Never corporate. Include a "Rooted in ${city || "Our Community"}" section.
+3. HERO: Warm welcome mat. Visitor feels "this place is for me."
+4. NAV: Fixed navbar, smooth scroll to sections, working mobile hamburger menu with JavaScript toggle. Every nav link must point to an existing section ID on the page.
+5. ${typeContent}
+6. CONTACT SECTION: Must include ALL of these:
+   - A contact form with netlify attribute on the form tag
+   - Phone, email, address, and hours displayed warmly
+   - A Google Maps embed using this iframe (replace ADDRESS with the actual address URL-encoded):
+     <iframe src="https://maps.google.com/maps?q=${encodeURIComponent(address || city || "Mount Vernon, NY")}&output=embed" width="100%" height="300" style="border:0;border-radius:12px;" allowfullscreen="" loading="lazy"></iframe>
+7. FOOTER: Personal and warm. Business name, tagline, contact info, nav links.
+8. MOBILE FIRST: Fully responsive. Single column on mobile, grid on desktop. Test every section.
+9. HAMBURGER MENU: Must work with inline JavaScript. When hamburger is clicked, mobile nav slides in. Clicking a nav link closes the menu.
+10. FONTS: https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,700&family=DM+Sans:wght@300;400;500;600&family=Fraunces:ital,wght@0,400;0,700;1,400&family=Lora:ital,wght@0,400;0,600;1,400&display=swap
+11. No external JS libraries. One self-contained file with all CSS and JS inline.
+12. QUALITY BAR: Looks like a $2,000 boutique agency site. Hover states, transitions, spacing — every detail matters.
+13. SECTIONS: Build a section for every page in the Pages list. Each must have a unique ID matching the nav link.
 
 OUTPUT: Raw HTML only. Start with <!DOCTYPE html>. No markdown, no explanation, no code fences.`;
 }
