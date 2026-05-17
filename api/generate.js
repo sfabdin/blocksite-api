@@ -6,6 +6,7 @@ const https = require("https");
 function buildPrompt(p) {
   const { businessName, businessType, industry, tagline, description, about, vibe, pages, phone, email, address, city, hours, typeSpecific, photos = [] } = p;
   const typeLabel = businessType === "restaurant" ? "Restaurant / Food Business" : businessType === "retail" ? "General Store / Retail" : "Specialty Service Business";
+  console.log(`Photos received: ${photos.length}, total payload size: ${JSON.stringify(p).length} chars`);
   const photoInstructions = photos.length > 0
     ? `The owner uploaded ${photos.length} real photo(s). Embed them in the gallery as <img> tags with these exact base64 data URLs:\n${photos.slice(0,4).map((url, i) => `Photo ${i+1}: src="${url}"`).join("\n")}`
     : `No photos uploaded. Use styled placeholder divs with emoji.`;
@@ -55,7 +56,14 @@ REQUIREMENTS:
 10. FONTS: https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,700&family=DM+Sans:wght@300;400;500;600&family=Fraunces:ital,wght@0,400;0,700;1,400&family=Lora:ital,wght@0,400;0,600;1,400&display=swap
 11. No external JS libraries. One self-contained file with all CSS and JS inline.
 12. QUALITY BAR: Looks like a $2,000 boutique agency site. Hover states, transitions, spacing — every detail matters.
-13. SECTIONS: Build a section for every page in the Pages list. Each must have a unique ID matching the nav link.
+13. SECTIONS REQUIRED: You MUST build ALL of these sections in order, each with the exact ID shown:
+    - <section id="home"> — Hero section
+    - <section id="menu"> — Full menu with categories
+    - <section id="about"> — About Us / story
+    - <section id="hours-location"> — Hours, address, and Google Maps embed
+    - <section id="contact"> — Contact form + contact info
+    Every section in the Pages list MUST have a corresponding HTML section on the page. Do not skip any.
+14. PRICES: NEVER make up prices. If no prices were provided, do NOT show any dollar amounts. Use descriptions only.
 
 OUTPUT: Raw HTML only. Start with <!DOCTYPE html>. No markdown, no explanation, no code fences.`;
 }
