@@ -160,7 +160,10 @@ export default async function handler(req, res) {
       request.end();
     });
 
-    // Send owner email
+    // Return HTML immediately — don't wait for emails
+    res.status(200).json({ html, orderId });
+
+    // Send emails after response (fire and forget)
     const ownerEmail = process.env.OWNER_EMAIL;
     const resendKey = process.env.RESEND_API_KEY;
     const fromEmail = process.env.FROM_EMAIL;
@@ -181,10 +184,9 @@ export default async function handler(req, res) {
         </div>`,
         [{ filename: `${bizSlug}.html`, content: Buffer.from(html).toString("base64") }],
         resendKey, fromEmail
-      );
+      ).catch(e => console.log("Owner email error:", e.message));
     }
 
-    // Send customer email
     if (formData.email && resendKey) {
       sendEmail(
         formData.email,
@@ -195,10 +197,8 @@ export default async function handler(req, res) {
           <p><strong>Order ID:</strong> ${orderId}</p>
         </div>`,
         [], resendKey, fromEmail
-      );
+      ).catch(e => console.log("Customer email error:", e.message));
     }
-
-    return res.status(200).json({ html, orderId });
 
   } catch (err) {
     console.error("Generation failed:", err.message);
