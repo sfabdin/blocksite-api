@@ -2,11 +2,14 @@
   "functions": {
     "api/generate.js": {
       "maxDuration": 300
+    },
+    "api/webhook.js": {
+      "maxDuration": 30
     }
   },
   "headers": [
     {
-      "source": "/api/(.*)",
+      "source": "/api/generate",
       "headers": [
         { "key": "Access-Control-Allow-Origin", "value": "*" },
         { "key": "Access-Control-Allow-Methods", "value": "POST, OPTIONS" },
