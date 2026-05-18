@@ -146,93 +146,80 @@ OUTPUT: Raw HTML only. Start with <!DOCTYPE html>. No markdown. No code fences. 
       return res.status(500).json({ error: "AI returned empty response" });
     }
 
-    // Return as base64 to avoid encoding issues
     const htmlB64 = Buffer.from(html, "utf8").toString("base64");
-    res.status(200).json({ htmlB64, orderId });
+    const bizSlug = (p.businessName || "website").toLowerCase().replace(/\s+/g, "-");
 
-    // Fire-and-forget emails
+    // ── Save to Upstash — webhook reads this after payment ─────────
+    const upstashUrl = process.env.UPSTASH_REDIS_REST_URL;
+    const upstashToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+    if (upstashUrl && upstashToken) {
+      try {
+        const jobData = Buffer.from(JSON.stringify({
+          htmlB64,
+          businessName: p.businessName,
+          city: p.city,
+          email: p.email,
+          packageId: p.packageId,
+          orderId,
+        })).toString("base64");
+        await fetch(`${upstashUrl}/set/order:${orderId}?ex=86400`, {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${upstashToken}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ value: jobData }),
+        });
+        console.log(`Saved to Upstash: order:${orderId}`);
+      } catch(e) {
+        console.error("Upstash save error:", e.message);
+      }
+    }
+
+    // ── Owner notification only — customer email fires via webhook ──
     const resendKey = process.env.RESEND_API_KEY;
     const ownerEmail = process.env.OWNER_EMAIL;
     const fromEmail = process.env.FROM_EMAIL || "BlockSite <hello@blocksitebuilder.com>";
 
     if (resendKey && ownerEmail) {
-      const bizSlug = (p.businessName || "website").toLowerCase().replace(/\s+/g, "-");
-      fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${resendKey}` },
-        body: JSON.stringify({
-          from: fromEmail,
-          to: ownerEmail,
-          subject: `[BlockSite] ${p.businessName || "New site"} · ${orderId}`,
-          html: `<div style="font-family:sans-serif;padding:24px"><h2>New BlockSite Preview</h2><p><strong>Order:</strong> ${orderId}</p><p><strong>Business:</strong> ${p.businessName}</p><p><strong>Customer:</strong> ${p.email || "—"}</p><p><strong>City:</strong> ${p.city || "—"}</p><p><strong>Vibe:</strong> "${p.vibe || "—"}"</p></div>`,
-          attachments: [{ filename: `${bizSlug}.html`, content: htmlB64 }],
-        }),
-      }).catch(e => console.log("Owner email error:", e.message));
+      const promptSummary = `
+        <table style="font-family:sans-serif;font-size:14px;border-collapse:collapse;width:100%">
+          <tr><td style="padding:8px;font-weight:bold;width:140px;color:#666">Order ID</td><td style="padding:8px">${orderId}</td></tr>
+          <tr style="background:#f9f9f9"><td style="padding:8px;font-weight:bold;color:#666">Business</td><td style="padding:8px">${p.businessName || "—"}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;color:#666">Type</td><td style="padding:8px">${typeLabel}</td></tr>
+          <tr style="background:#f9f9f9"><td style="padding:8px;font-weight:bold;color:#666">City</td><td style="padding:8px">${p.city || "—"}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;color:#666">Phone</td><td style="padding:8px">${p.phone || "—"}</td></tr>
+          <tr style="background:#f9f9f9"><td style="padding:8px;font-weight:bold;color:#666">Email</td><td style="padding:8px">${p.email || "—"}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;color:#666">Address</td><td style="padding:8px">${p.address || "—"}</td></tr>
+          <tr style="background:#f9f9f9"><td style="padding:8px;font-weight:bold;color:#666">Hours</td><td style="padding:8px">${p.hours || "—"}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;color:#666">Photos</td><td style="padding:8px">${photoCount} uploaded</td></tr>
+          <tr style="background:#f9f9f9"><td style="padding:8px;font-weight:bold;color:#666">Package</td><td style="padding:8px">${p.packageId || "—"}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;color:#666;vertical-align:top">Vibe</td><td style="padding:8px;font-style:italic">"${p.vibe || "—"}"</td></tr>
+          <tr style="background:#f9f9f9"><td style="padding:8px;font-weight:bold;color:#666;vertical-align:top">Description</td><td style="padding:8px">${p.description || "—"}</td></tr>
+          <tr><td style="padding:8px;font-weight:bold;color:#666;vertical-align:top">Type-specific</td><td style="padding:8px;white-space:pre-wrap">${p.typeSpecific || "—"}</td></tr>
+        </table>`;
+      try {
+        await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${resendKey}` },
+          body: JSON.stringify({
+            from: fromEmail,
+            to: ownerEmail,
+            subject: `[BlockSite] Preview generated — ${p.businessName || "Unknown"} · ${orderId}`,
+            html: `<div style="font-family:sans-serif;padding:24px;max-width:700px">
+              <h2 style="color:#1c1a14">New Preview Generated</h2>
+              <p style="color:#666;margin-bottom:8px">Customer has not paid yet. HTML attached for reference.</p>
+              <p style="color:#c4813a;font-size:13px;margin-bottom:24px">Order stored in Upstash for 24hrs as: order:${orderId}</p>
+              ${promptSummary}
+            </div>`,
+            attachments: [{ filename: `${bizSlug}.html`, content: htmlB64 }],
+          }),
+        });
+        console.log("Owner notification sent.");
+      } catch(e) {
+        console.error("Owner email error:", e.message);
+      }
     }
 
-    if (resendKey && p.email) {
-      const bizSlug = (p.businessName || "website").toLowerCase().replace(/\s+/g, "-");
-      await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${resendKey}` },
-        body: JSON.stringify({
-          from: fromEmail,
-          to: p.email,
-          subject: `Your BlockSite website is ready — ${p.businessName || "Your Business"}`,
-          html: `<div style="font-family:sans-serif;max-width:600px;margin:0 auto;color:#1c1a14">
-  <div style="background:#1c1a14;padding:28px 32px;border-radius:12px 12px 0 0">
-    <div style="font-size:22px;font-weight:900;color:#ffffff;letter-spacing:-0.02em">BLOCK<span style="color:#c4813a">SITE</span></div>
-  </div>
-  <div style="background:#faf8f3;padding:32px;border:1px solid #e2ddd0;border-top:none;border-radius:0 0 12px 12px">
-    <h2 style="font-size:24px;font-weight:700;margin:0 0 8px">Your website is ready!</h2>
-    <p style="color:#6b6355;margin:0 0 24px">Order ID: <strong>${orderId}</strong></p>
-    <p style="font-size:16px;line-height:1.7;margin:0 0 24px">Your BlockSite website for <strong>${p.businessName || "your business"}</strong> is attached to this email. Here's how to get it live — no tech experience needed.</p>
-
-    <div style="background:#fff;border:1px solid #e2ddd0;border-radius:10px;padding:24px;margin-bottom:16px">
-      <p style="margin:0 0 6px;font-size:11px;font-weight:700;color:#c4813a;text-transform:uppercase;letter-spacing:0.08em">Step 1 — Save your website file</p>
-      <p style="margin:0;font-size:15px;line-height:1.7">Your website is attached to this email. Save it to your Desktop. Double-click it anytime to preview it in your browser.</p>
-    </div>
-
-    <div style="background:#fff;border:1px solid #e2ddd0;border-radius:10px;padding:24px;margin-bottom:16px">
-      <p style="margin:0 0 6px;font-size:11px;font-weight:700;color:#c4813a;text-transform:uppercase;letter-spacing:0.08em">Step 2 — Create a free Netlify account</p>
-      <p style="margin:0;font-size:15px;line-height:1.7">Go to <a href="https://netlify.com" style="color:#c4813a">netlify.com</a> and sign up. Just email and password — no credit card needed.</p>
-    </div>
-
-    <div style="background:#fff;border:1px solid #e2ddd0;border-radius:10px;padding:24px;margin-bottom:16px">
-      <p style="margin:0 0 6px;font-size:11px;font-weight:700;color:#c4813a;text-transform:uppercase;letter-spacing:0.08em">Step 3 — Drag your file to go live</p>
-      <p style="margin:0;font-size:15px;line-height:1.7">In Netlify, find the <strong>"Deploy manually"</strong> section and drag your website file into the box. In under 60 seconds you'll have a real web address anyone can visit. Your site is live.</p>
-    </div>
-
-    <div style="background:#fff;border:1px solid #e2ddd0;border-radius:10px;padding:24px;margin-bottom:16px">
-      <p style="margin:0 0 6px;font-size:11px;font-weight:700;color:#c4813a;text-transform:uppercase;letter-spacing:0.08em">Step 4 — Get a real domain name (recommended)</p>
-      <p style="margin:0;font-size:15px;line-height:1.7">Go to <a href="https://namecheap.com" style="color:#c4813a">namecheap.com</a>, search your business name, and buy a .com for about $10–12/year. Netlify walks you through connecting it — takes about 10 minutes.</p>
-    </div>
-
-    <div style="background:#fff;border:1px solid #3a6e4f40;border-radius:10px;padding:24px;margin-bottom:16px">
-      <p style="margin:0 0 6px;font-size:11px;font-weight:700;color:#3a6e4f;text-transform:uppercase;letter-spacing:0.08em">Step 5 — Get on Google (most important)</p>
-      <p style="margin:0 0 10px;font-size:15px;line-height:1.7">This is free and the #1 thing that gets you found when people search nearby.</p>
-      <ol style="margin:0;padding-left:20px;font-size:14px;line-height:2;color:#1c1a14">
-        <li>Go to <a href="https://business.google.com" style="color:#c4813a">business.google.com</a> and sign in</li>
-        <li>Click "Add your business" and search your name</li>
-        <li>Fill in your address, phone, hours, and category</li>
-        <li>Add your new website address</li>
-        <li>Verify — Google mails a postcard with a code (5–14 days)</li>
-        <li>Add photos once verified</li>
-        <li>Ask regulars to leave a Google review — even 5 reviews makes a big difference</li>
-      </ol>
-    </div>
-
-    <div style="background:#1c1a14;border-radius:10px;padding:24px;margin-bottom:24px;text-align:center">
-      <p style="margin:0 0 8px;font-size:15px;color:#faf8f3;line-height:1.7">Questions? Running into something? Just reply to this email.</p>
-      <a href="mailto:hello@blocksitebuilder.com" style="color:#c4813a;font-size:15px;font-weight:600">hello@blocksitebuilder.com</a>
-    </div>
-    <p style="font-size:13px;color:#a89880;text-align:center;margin:0">© ${new Date().getFullYear()} BlockSite · blocksitebuilder.com</p>
-  </div>
-</div>`,
-          attachments: [{ filename: `${bizSlug}.html`, content: htmlB64 }],
-        }),
-      }).catch(e => console.log("Customer email error:", e.message));
-    }
+    // ── Respond to client ──────────────────────────────────────────
+    return res.status(200).json({ htmlB64, orderId });
 
   } catch (err) {
     console.error("Generation failed:", err.message);
