@@ -2,7 +2,6 @@
 // Max duration: 300 seconds (set in vercel.json)
 
 export default async function handler(req, res) {
-  // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -23,52 +22,45 @@ export default async function handler(req, res) {
     : "Specialty Service Business";
 
   const typeContent = p.businessType === "restaurant"
-    ? `MENU SECTION (id="menu"): Beautiful menu grouped by category. Keep it concise — 3-4 items per category max. No invented prices.`
+    ? `MENU SECTION (id="menu"): Elegant two-column menu layout. Category headers in display serif. 3-4 items per category max — name prominent, one-line description, price only if provided. Include a reservation or order CTA at the bottom.`
     : p.businessType === "retail"
-    ? `SPECIALS SECTION (id="specials"): Bold Sales & Specials cards using info provided.`
-    : `SERVICES SECTION (id="services"): Clean services grid with clear booking CTA.`;
-
-  const photoInstructions = photoCount > 0
-    ? `The owner uploaded ${photoCount} photo(s). Use these EXACT placeholder strings in your HTML:
-- Hero background: background-image: url('HERO_PHOTO_PLACEHOLDER')
-- Gallery photos: <img src="PHOTO_1_PLACEHOLDER">, <img src="PHOTO_2_PLACEHOLDER"> etc.
-These MUST appear exactly as written — they get replaced with real photos after generation.`
-    : `No photos provided. Use warm CSS gradients and emoji as visual placeholders.`;
+    ? `SPECIALS SECTION (id="specials"): Large bold cards for deals and best-sellers. Price or savings prominent. At least one featured hero deal in a full-width card before the grid.`
+    : `SERVICES SECTION (id="services"): Clean service cards in a grid. Service name, short description, price if provided. Repeat the booking CTA at the bottom of the section.`;
 
   const mapsUrl = encodeURIComponent(`${p.address || ""} ${p.city || ""}`.trim());
 
   const photoLayout = photoCount === 0
-    ? "ZERO PHOTOS: Build a bold typographic site. Use color blocks, large type, and decorative CSS elements (geometric shapes, lines, patterns) as visual interest. The design must feel intentional, not empty."
+    ? "ZERO PHOTOS: Build a bold typographic site. Use large color blocks, oversized type, decorative CSS shapes and lines as visual elements. Should feel designed, not empty."
     : photoCount === 1
-    ? "ONE PHOTO: Use it as a dramatic full-bleed hero background with overlay text. Don't use it anywhere else — let it anchor the whole site."
+    ? "ONE PHOTO: Use HERO_PHOTO_PLACEHOLDER as a dramatic full-bleed hero background with a dark overlay. Do not use it anywhere else — let it anchor the entire page."
     : photoCount === 2
-    ? "TWO PHOTOS: Hero background (HERO_PHOTO_PLACEHOLDER) + one editorial split-layout in the about section (PHOTO_1_PLACEHOLDER beside text, 50/50 on desktop)."
-    : `${photoCount} PHOTOS: Hero background (HERO_PHOTO_PLACEHOLDER) + editorial gallery in about section using PHOTO_1_PLACEHOLDER through PHOTO_${Math.min(photoCount, 4)}_PLACEHOLDER. Use an asymmetric masonry-style layout — not a boring grid.`;
+    ? "TWO PHOTOS: HERO_PHOTO_PLACEHOLDER as hero background. PHOTO_1_PLACEHOLDER in an editorial 50/50 split layout in the about section — photo left, text right on desktop."
+    : `${photoCount} PHOTOS: HERO_PHOTO_PLACEHOLDER as hero background. Use PHOTO_1_PLACEHOLDER through PHOTO_${Math.min(photoCount, 4)}_PLACEHOLDER in an asymmetric masonry-style gallery in the about section. Vary sizes — not a boring equal grid.`;
 
   const typeLayout = p.businessType === "restaurant"
-    ? `RESTAURANT LAYOUT ARCHETYPE: Think award-winning restaurant site. Dark, moody, editorial. Large hero with restaurant name in display type. Menu section uses a two-column layout with category headers in serif, dish names prominent, descriptions in smaller body text. Include a "reservation / order" CTA. The about section should feel like a story — pull quote from the owner, warm photo if available.`
+    ? "RESTAURANT ARCHETYPE: Dark, moody, editorial. Think award-winning restaurant site. Hero is cinematic — full height, dramatic type, minimal text. Menu section is clean and typographic. About section has a pull quote from the owner. Atmosphere over information."
     : p.businessType === "retail"
-    ? `RETAIL LAYOUT ARCHETYPE: Think boutique shop. Warm, inviting, slightly playful. Hero with a bold tagline and immediate CTA ("See what's in store"). Specials/products section uses large cards with bold typography — price or deal prominent. The about section anchors the neighborhood connection — this is someone's family business, not a chain.`
-    : `SERVICE LAYOUT ARCHETYPE: Think premium local service provider. Clean, trustworthy, confident. Hero establishes credibility immediately — years in business, specialty, community roots. Services displayed as clean cards with clear pricing if available. Testimonials or trust signals woven in. Strong booking CTA repeated throughout.`;
+    ? "RETAIL ARCHETYPE: Warm, inviting, neighborhood boutique. Hero has energy and a clear CTA. Products/specials section uses bold cards. The about section roots the business in the community — family-owned, not corporate."
+    : "SERVICE ARCHETYPE: Professional, trustworthy, confident. Hero establishes credibility immediately — specialty, years in business, community anchor. Services in clean cards. Testimonial or trust signal woven in. Booking CTA repeated.";
 
-  const prompt = `You are a senior web designer at a boutique agency. Your sites win awards. They look custom, feel alive, and make the business owner proud. This is not a template — this is a bespoke site for a specific business.
+  const prompt = `You are a senior web designer at a boutique agency. Your sites win awards. They feel alive, look custom, and make business owners proud to share them. This is not a template.
 
-BUSINESS BRIEF:
+BUSINESS:
 - Name: ${p.businessName || "Local Business"}
 - Type: ${typeLabel}
 - Industry: ${p.industry || "small business"}
 - Tagline: ${p.tagline || ""}
 - Description: ${p.description || ""}
 - About / Origin Story: ${p.about || ""}
-- City / Neighborhood: ${p.city || "our community"}
+- City: ${p.city || "our community"}
 - Phone: ${p.phone || ""} | Email: ${p.email || ""} | Address: ${p.address || ""}
 - Hours: ${p.hours || ""}
 
-BUSINESS-SPECIFIC CONTENT:
+CONTENT:
 ${p.typeSpecific || ""}
 
-VIBE DIRECTION: "${p.vibe || "Warm, welcoming, community-first"}"
-This is the most important instruction. Read it carefully. Choose a color palette, typography scale, and layout rhythm that genuinely expresses this vibe. Surprise me — don't default to generic.
+VIBE: "${p.vibe || "Warm, welcoming, community-first"}"
+This is the most important instruction. Read it twice. Let it drive every color, font weight, spacing, and layout decision. Do not default to generic.
 
 LAYOUT ARCHETYPE:
 ${typeLayout}
@@ -76,50 +68,48 @@ ${typeLayout}
 PHOTO STRATEGY:
 ${photoLayout}
 
-SEO — MANDATORY:
+SEO — MANDATORY, every generation:
 1. <title>: "${p.businessName || "Local Business"} — ${p.industry || p.businessType} in ${p.city || "our community"}"
-2. <meta name="description"> 150–160 chars: business name + what they do + city + one differentiator
-3. JSON-LD LocalBusiness schema in <head> with name, address, telephone, openingHours
-4. <h1> includes the city naturally
-5. City name used 3–4 times throughout copy
-6. All images have descriptive alt tags with business name and city
+2. <meta name="description"> exactly 150-160 chars: name + what they do + city + differentiator
+3. JSON-LD in <head>: LocalBusiness schema with name, streetAddress, addressLocality, telephone, openingHours
+4. <h1> includes city name naturally — not just the business name
+5. City name appears 3-4 times throughout the page copy
+6. Every img tag has a descriptive alt including business name and city
 
-ANIMATIONS — ADD ALL OF THESE:
-- Fade-up on scroll: add a class "fade-up" to every major section. Use IntersectionObserver in JS to add class "visible" when in viewport. CSS: .fade-up { opacity:0; transform:translateY(24px); transition: opacity 0.6s ease, transform 0.6s ease; } .fade-up.visible { opacity:1; transform:none; }
-- Hero text: stagger the headline, tagline, and CTA button with animation-delay (0s, 0.15s, 0.3s)
-- Nav: add backdrop-filter blur and subtle border-bottom on scroll (JS scroll listener adds class "scrolled")
-- Hover states: every card, button, and link must have a smooth hover (scale, shadow, or color shift)
-- Count-up numbers: if you include any stats or numbers, animate them counting up on scroll
+ANIMATIONS — include all of these:
+- .fade-up class on every major section. IntersectionObserver adds .visible class. CSS: .fade-up{opacity:0;transform:translateY(24px);transition:opacity .6s ease,transform .6s ease} .fade-up.visible{opacity:1;transform:none}
+- Hero: stagger headline (0s), tagline (.15s), CTA (.3s) with animation-delay
+- Nav: transparent initially, gains background + shadow when user scrolls down (scroll event listener, add class "scrolled")
+- All buttons and cards: smooth hover with scale or shadow shift (transform .2s ease)
+- Any numerical stats: count-up animation on scroll using IntersectionObserver
 
-DESIGN STANDARDS — NON-NEGOTIABLE:
-- NO emoji anywhere. Zero. Use SVG icons or typographic elements only.
-- Typography: pick TWO fonts from the provided stack and use them with clear hierarchy. Mix weights dramatically — 900 for display, 300 for body.
-- Color: 2 hero colors + 2 neutrals. Make them feel chosen. No default blues or grays.
-- Spacing: generous. Sections breathe. Nothing cramped.
-- Each section must feel visually distinct — vary background color, layout direction, and density.
-- Quality bar: this site costs $3,000–5,000 from an agency. It should look it.
+DESIGN — non-negotiable:
+- Zero emoji. Anywhere. Use SVG icons or pure typographic/CSS elements only.
+- Two fonts max from the stack. Use weight contrast dramatically — 900 display, 300-400 body.
+- Color palette: 2 brand colors + 2 neutrals. All chosen deliberately. No generic blues or grays.
+- Generous spacing. Sections breathe. Padding is a design decision.
+- Every section visually distinct — alternate background, flip layout direction, change density.
+- Quality standard: $3,000-5,000 agency site. It should be obvious.
 
-REQUIRED SECTIONS:
-1. <nav> — Fixed. Transparent over hero, gains background on scroll. Logo left, links right, hamburger mobile. Smooth scroll.
-2. <section id="home"> — Hero. Full viewport height. Vibe-appropriate background. Large display type. Staggered animation. Strong CTA.
+SECTIONS — build all, in order:
+1. <nav> — Fixed. Transparent on hero, gains bg on scroll. Business name/logo left. Links right. Hamburger on mobile. Closes on link click.
+2. <section id="home"> — Hero. Full viewport height. Bold display type. Staggered animation. One CTA. Vibe-matched background.
 3. ${typeContent}
-4. <section id="about"> — Story. Human. Rooted. "${p.city || "Our Community"}" connection explicit. Quote or pull-out if owner story provided.
-5. <section id="hours-location"> — Hours + address + Google Maps:
-   <iframe src="https://maps.google.com/maps?q=${mapsUrl}&output=embed" width="100%" height="320" style="border:0;border-radius:12px;margin-top:1.5rem;" allowfullscreen loading="lazy"></iframe>
-6. <section id="contact"> — Form (name, email, message, submit) with netlify attribute. Contact info beside it.
-7. <footer> — Business name, tagline, nav links, contact, city. Warm closing line. Copyright.
+4. <section id="about"> — Story. Human. "${p.city || "Our Community"}" connection explicit. Pull quote if origin story provided. Photo(s) if available.
+5. <section id="hours-location"> — Hours cleanly formatted. Full address. Google Maps: <iframe src="https://maps.google.com/maps?q=${mapsUrl}&output=embed" width="100%" height="320" style="border:0;border-radius:12px;margin-top:1.5rem;" allowfullscreen loading="lazy"></iframe>
+6. <section id="contact"> — Form with netlify attribute (name, email, message, submit). Contact details beside it.
+7. <footer> — Name, tagline, nav links, contact info, city. Warm sign-off. Copyright.
 
 TECHNICAL:
-- Single self-contained HTML file. All CSS and JS inline. No external JS libraries.
-- Mobile-first. Perfect at 375px. CSS grid/flex adapts to desktop.
+- One self-contained HTML file. All CSS and JS inline. Zero external JS libraries.
+- Mobile-first. 375px minimum. Grid/flex adapts to desktop breakpoints.
 - Fonts: https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,700&family=DM+Sans:wght@300;400;500;600&family=Fraunces:ital,wght@0,400;0,700;1,400&family=Lora:ital,wght@0,400;0,600;1,400&display=swap
-- Mobile hamburger nav: JS toggle, closes on link click.
-- NEVER invent prices or hours not provided.
 - html { scroll-behavior: smooth; }
-- IntersectionObserver for fade-up animations must work on first load too (threshold: 0.1)
-- If running low on tokens: shorten copy, never skip sections, never skip SEO, never close HTML prematurely.
+- IntersectionObserver threshold 0.1, triggers on first load as well as scroll
+- NEVER invent prices, hours, or contact info not provided
+- Running low on tokens? Shorten copy per section. NEVER skip a section. NEVER skip SEO. NEVER close HTML early.
 
-OUTPUT: Raw HTML only. Start with <!DOCTYPE html>. No markdown. No code fences. No explanation.
+OUTPUT: Raw HTML only. Start with <!DOCTYPE html>. No markdown. No code fences. No explanation.`;
 
   try {
     const body = JSON.stringify({
@@ -181,7 +171,7 @@ OUTPUT: Raw HTML only. Start with <!DOCTYPE html>. No markdown. No code fences. 
       }
     }
 
-    // ── Owner notification only — customer email fires via webhook ──
+    // ── Owner notification — fires before res.json() ───────────────
     const resendKey = process.env.RESEND_API_KEY;
     const ownerEmail = process.env.OWNER_EMAIL;
     const fromEmail = process.env.FROM_EMAIL || "BlockSite <hello@blocksitebuilder.com>";
@@ -210,11 +200,11 @@ OUTPUT: Raw HTML only. Start with <!DOCTYPE html>. No markdown. No code fences. 
           body: JSON.stringify({
             from: fromEmail,
             to: ownerEmail,
-            subject: `[BlockSite] Preview generated — ${p.businessName || "Unknown"} · ${orderId}`,
+            subject: `[BlockSite] Preview — ${p.businessName || "Unknown"} · ${orderId}`,
             html: `<div style="font-family:sans-serif;padding:24px;max-width:700px">
               <h2 style="color:#1c1a14">New Preview Generated</h2>
-              <p style="color:#666;margin-bottom:8px">Customer has not paid yet. HTML attached for reference.</p>
-              <p style="color:#c4813a;font-size:13px;margin-bottom:24px">Order stored in Upstash for 24hrs as: order:${orderId}</p>
+              <p style="color:#666;margin-bottom:8px">Customer has not paid yet. HTML attached.</p>
+              <p style="color:#c4813a;font-size:13px;margin-bottom:24px">Stored in Upstash 24hrs: order:${orderId}</p>
               ${promptSummary}
             </div>`,
             attachments: [{ filename: `${bizSlug}.html`, content: htmlB64 }],
@@ -226,7 +216,6 @@ OUTPUT: Raw HTML only. Start with <!DOCTYPE html>. No markdown. No code fences. 
       }
     }
 
-    // ── Respond to client ──────────────────────────────────────────
     return res.status(200).json({ htmlB64, orderId });
 
   } catch (err) {
