@@ -37,7 +37,21 @@ These MUST appear exactly as written — they get replaced with real photos afte
 
   const mapsUrl = encodeURIComponent(`${p.address || ""} ${p.city || ""}`.trim());
 
-  const prompt = `You are a senior web designer at a boutique agency that charges $3,000–5,000 for small business websites. Your output should look like it justifies that price tag — polished, intentional, distinctive. Not a template. Not generic. Built for THIS business.
+  const photoLayout = photoCount === 0
+    ? "ZERO PHOTOS: Build a bold typographic site. Use color blocks, large type, and decorative CSS elements (geometric shapes, lines, patterns) as visual interest. The design must feel intentional, not empty."
+    : photoCount === 1
+    ? "ONE PHOTO: Use it as a dramatic full-bleed hero background with overlay text. Don't use it anywhere else — let it anchor the whole site."
+    : photoCount === 2
+    ? "TWO PHOTOS: Hero background (HERO_PHOTO_PLACEHOLDER) + one editorial split-layout in the about section (PHOTO_1_PLACEHOLDER beside text, 50/50 on desktop)."
+    : `${photoCount} PHOTOS: Hero background (HERO_PHOTO_PLACEHOLDER) + editorial gallery in about section using PHOTO_1_PLACEHOLDER through PHOTO_${Math.min(photoCount, 4)}_PLACEHOLDER. Use an asymmetric masonry-style layout — not a boring grid.`;
+
+  const typeLayout = p.businessType === "restaurant"
+    ? `RESTAURANT LAYOUT ARCHETYPE: Think award-winning restaurant site. Dark, moody, editorial. Large hero with restaurant name in display type. Menu section uses a two-column layout with category headers in serif, dish names prominent, descriptions in smaller body text. Include a "reservation / order" CTA. The about section should feel like a story — pull quote from the owner, warm photo if available.`
+    : p.businessType === "retail"
+    ? `RETAIL LAYOUT ARCHETYPE: Think boutique shop. Warm, inviting, slightly playful. Hero with a bold tagline and immediate CTA ("See what's in store"). Specials/products section uses large cards with bold typography — price or deal prominent. The about section anchors the neighborhood connection — this is someone's family business, not a chain.`
+    : `SERVICE LAYOUT ARCHETYPE: Think premium local service provider. Clean, trustworthy, confident. Hero establishes credibility immediately — years in business, specialty, community roots. Services displayed as clean cards with clear pricing if available. Testimonials or trust signals woven in. Strong booking CTA repeated throughout.`;
+
+  const prompt = `You are a senior web designer at a boutique agency. Your sites win awards. They look custom, feel alive, and make the business owner proud. This is not a template — this is a bespoke site for a specific business.
 
 BUSINESS BRIEF:
 - Name: ${p.businessName || "Local Business"}
@@ -54,64 +68,58 @@ BUSINESS-SPECIFIC CONTENT:
 ${p.typeSpecific || ""}
 
 VIBE DIRECTION: "${p.vibe || "Warm, welcoming, community-first"}"
-Read this carefully. Choose a color palette, typography, and layout that genuinely express this vibe. Make it feel custom, not like a WordPress theme.
+This is the most important instruction. Read it carefully. Choose a color palette, typography scale, and layout rhythm that genuinely expresses this vibe. Surprise me — don't default to generic.
 
-PHOTOS: ${photoInstructions}
+LAYOUT ARCHETYPE:
+${typeLayout}
 
-SEO REQUIREMENTS — these are mandatory, not optional:
-1. <title> tag MUST follow this format: "${p.businessName || "Local Business"} — ${p.industry || p.businessType} in ${p.city || "our community"}"
-2. <meta name="description"> MUST be 150–160 characters, include the business name, what they do, and the city. Example: "Rosa's Caribbean Kitchen serves authentic Caribbean food in Mount Vernon, NY. Family-owned since 1998. Dine in or take out — open 7 days."
-3. Include this JSON-LD schema in the <head> for local SEO:
-<script type="application/ld+json">
-{
-  "@context": "https://schema.org",
-  "@type": "LocalBusiness",
-  "name": "${p.businessName || "Local Business"}",
-  "description": "${p.description || ""}",
-  "address": {
-    "@type": "PostalAddress",
-    "streetAddress": "${p.address || ""}",
-    "addressLocality": "${p.city || ""}",
-    "addressCountry": "US"
-  },
-  "telephone": "${p.phone || ""}",
-  "openingHours": "${p.hours || ""}",
-  "url": "https://www.example.com"
-}
-</script>
-4. The <h1> must include the city naturally: e.g. "Authentic Caribbean Food in Mount Vernon" not just the business name
-5. Use the city name naturally 3–4 times throughout the page copy — in the hero, about section, rooted section, and footer
-6. Every image must have a descriptive alt tag that includes the business name and city
+PHOTO STRATEGY:
+${photoLayout}
 
-DESIGN STANDARDS — non-negotiable:
-- NO emoji anywhere in the design. Zero. Not in headings, not as icons, not as decorations. Use SVG icons, typographic elements, or well-designed CSS shapes instead.
-- Typography must be intentional: strong hierarchy, generous line-height, considered spacing.
-- Color palette: 2–3 colors max plus neutrals. Make them feel chosen, not default.
-- Spacing: generous padding, whitespace as a design element. Nothing cramped.
-- Sections should feel distinct — vary background colors, layouts, and rhythm between sections.
-- Hover states on all interactive elements. Smooth transitions (0.2s ease).
-- The hero section must be visually striking.
+SEO — MANDATORY:
+1. <title>: "${p.businessName || "Local Business"} — ${p.industry || p.businessType} in ${p.city || "our community"}"
+2. <meta name="description"> 150–160 chars: business name + what they do + city + one differentiator
+3. JSON-LD LocalBusiness schema in <head> with name, address, telephone, openingHours
+4. <h1> includes the city naturally
+5. City name used 3–4 times throughout copy
+6. All images have descriptive alt tags with business name and city
 
-REQUIRED SECTIONS — build ALL of these in order:
-1. <nav> — Fixed. Logo/business name left, nav links right, hamburger on mobile. Smooth scroll to sections. Backdrop blur background.
-2. <section id="home"> — Hero. Full viewport height. ${photoCount > 0 ? "Use HERO_PHOTO_PLACEHOLDER as background-image with a dark overlay for text legibility." : "Use a rich gradient that matches the vibe."} Business name in large display type. Tagline. One strong CTA button.
+ANIMATIONS — ADD ALL OF THESE:
+- Fade-up on scroll: add a class "fade-up" to every major section. Use IntersectionObserver in JS to add class "visible" when in viewport. CSS: .fade-up { opacity:0; transform:translateY(24px); transition: opacity 0.6s ease, transform 0.6s ease; } .fade-up.visible { opacity:1; transform:none; }
+- Hero text: stagger the headline, tagline, and CTA button with animation-delay (0s, 0.15s, 0.3s)
+- Nav: add backdrop-filter blur and subtle border-bottom on scroll (JS scroll listener adds class "scrolled")
+- Hover states: every card, button, and link must have a smooth hover (scale, shadow, or color shift)
+- Count-up numbers: if you include any stats or numbers, animate them counting up on scroll
+
+DESIGN STANDARDS — NON-NEGOTIABLE:
+- NO emoji anywhere. Zero. Use SVG icons or typographic elements only.
+- Typography: pick TWO fonts from the provided stack and use them with clear hierarchy. Mix weights dramatically — 900 for display, 300 for body.
+- Color: 2 hero colors + 2 neutrals. Make them feel chosen. No default blues or grays.
+- Spacing: generous. Sections breathe. Nothing cramped.
+- Each section must feel visually distinct — vary background color, layout direction, and density.
+- Quality bar: this site costs $3,000–5,000 from an agency. It should look it.
+
+REQUIRED SECTIONS:
+1. <nav> — Fixed. Transparent over hero, gains background on scroll. Logo left, links right, hamburger mobile. Smooth scroll.
+2. <section id="home"> — Hero. Full viewport height. Vibe-appropriate background. Large display type. Staggered animation. Strong CTA.
 3. ${typeContent}
-4. <section id="about"> — Story section. Warm, human, community-rooted. Pull from the about/description provided. ${photoCount > 1 ? "Use PHOTO_1_PLACEHOLDER and PHOTO_2_PLACEHOLDER in an asymmetric or editorial layout." : photoCount === 1 ? "Use PHOTO_1_PLACEHOLDER prominently." : "Use a well-designed pull quote or editorial text layout."} Include a "Rooted in ${p.city || "Our Community"}" subsection within this section.
-5. <section id="hours-location"> — Hours in a clean, readable format. Full address. Google Maps embed:
+4. <section id="about"> — Story. Human. Rooted. "${p.city || "Our Community"}" connection explicit. Quote or pull-out if owner story provided.
+5. <section id="hours-location"> — Hours + address + Google Maps:
    <iframe src="https://maps.google.com/maps?q=${mapsUrl}&output=embed" width="100%" height="320" style="border:0;border-radius:12px;margin-top:1.5rem;" allowfullscreen loading="lazy"></iframe>
-6. <section id="contact"> — Contact form (name, email, message, submit). Show phone, email, address alongside. Form has netlify attribute on the <form> tag.
-7. <footer> — Business name, tagline, nav links, contact info, city. Warm closing line. Copyright.
+6. <section id="contact"> — Form (name, email, message, submit) with netlify attribute. Contact info beside it.
+7. <footer> — Business name, tagline, nav links, contact, city. Warm closing line. Copyright.
 
-TECHNICAL REQUIREMENTS:
-- Single self-contained HTML file. No external JS libraries.
-- Mobile-first. Perfect on 375px wide. Grid/flex adapts to desktop.
-- Fonts from: https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,700&family=DM+Sans:wght@300;400;500;600&family=Fraunces:ital,wght@0,400;0,700;1,400&family=Lora:ital,wght@0,400;0,600;1,400&display=swap
-- All JS inline. Mobile nav hamburger must toggle open/close. Clicking a nav link closes the mobile menu.
-- NEVER invent prices, hours, or details not provided.
-- smooth-scroll on <html> element.
-- If running low on output tokens, shorten each section's copy — but NEVER skip a section, NEVER skip the SEO tags, and NEVER close the HTML prematurely.
+TECHNICAL:
+- Single self-contained HTML file. All CSS and JS inline. No external JS libraries.
+- Mobile-first. Perfect at 375px. CSS grid/flex adapts to desktop.
+- Fonts: https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,700&family=DM+Sans:wght@300;400;500;600&family=Fraunces:ital,wght@0,400;0,700;1,400&family=Lora:ital,wght@0,400;0,600;1,400&display=swap
+- Mobile hamburger nav: JS toggle, closes on link click.
+- NEVER invent prices or hours not provided.
+- html { scroll-behavior: smooth; }
+- IntersectionObserver for fade-up animations must work on first load too (threshold: 0.1)
+- If running low on tokens: shorten copy, never skip sections, never skip SEO, never close HTML prematurely.
 
-OUTPUT: Raw HTML only. Start with <!DOCTYPE html>. No markdown. No code fences. No explanation before or after.`;
+OUTPUT: Raw HTML only. Start with <!DOCTYPE html>. No markdown. No code fences. No explanation.
 
   try {
     const body = JSON.stringify({
