@@ -185,43 +185,51 @@ ${!isFuneral && !isChurch && !isCatering && !isAutoBody && !isLegal && !isChildc
   ? `If research found real booking URL, make "Book Now" the hero CTA. Otherwise phone as primary CTA.` : ""}
 Phone <a href="tel:${p.phone||""}"> prominent. Address + "Get Directions" <a href="https://maps.google.com/?q=${mapsUrl}" target="_blank"> if walk-ins relevant. Hours. Contact form (name, email, message) if email provided.`;
 
-  // ── STEP 1: Research (two-pass) ────────────────────────────────
-  console.log(`[${orderId}] Starting research + prompt prep`);
+  // ── Return stream immediately — all processing happens inside ──
+  // This sends the first byte within milliseconds, keeping the connection alive
+  const encoder = new TextEncoder();
 
-  let researchFindings = "";
-  try {
-    // Pass 1: Search
-    const searchRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": anthropicKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-beta": "web-search-2025-03-05",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-5",
-        max_tokens: 5000,
-        system: "You are a business researcher. Search for the business and summarize everything you find — ratings, reviews, social media, history, links.",
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
-        messages: [{ role: "user", content: `Search for "${p.businessName}" ${p.address || ""} ${p.city || "New York"}. Find: Google rating, customer reviews (verbatim quotes), Instagram handle and followers, how long they've been open, delivery or booking links, any press coverage.` }],
-      }),
-    });
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (obj) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
 
-    if (searchRes.ok) {
-      const searchData = await searchRes.json();
-      const searchSummary = searchData.content?.filter(b => b.type === "text")?.map(b => b.text)?.join("\n") || "";
+      // Send orderId immediately — this is what keeps the Edge connection alive
+      send({ type: "orderId", orderId });
+      send({ type: "status", message: "Researching your business..." });
 
-      if (searchSummary) {
-        // Pass 2: Format
-        const formatRes = await fetch("https://api.anthropic.com/v1/messages", {
+      // ── STEP 1: Research (two-pass) ──────────────────────────
+      console.log(`[${orderId}] Starting research + prompt prep`);
+      let researchFindings = "";
+      try {
+        const searchRes = await fetch("https://api.anthropic.com/v1/messages", {
           method: "POST",
-          headers: { "Content-Type": "application/json", "x-api-key": anthropicKey, "anthropic-version": "2023-06-01" },
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": anthropicKey,
+            "anthropic-version": "2023-06-01",
+            "anthropic-beta": "web-search-2025-03-05",
+          },
           body: JSON.stringify({
             model: "claude-sonnet-4-5",
-            max_tokens: 2000,
-            system: "Extract structured business data. Output only the formatted fields, nothing else.",
-            messages: [{ role: "user", content: `From the search results below, extract this data. Write "none found" for anything missing. Never invent.
+            max_tokens: 5000,
+            system: "You are a business researcher. Search for the business and summarize everything you find — ratings, reviews, social media, history, links.",
+            tools: [{ type: "web_search_20250305", name: "web_search" }],
+            messages: [{ role: "user", content: `Search for "${p.businessName}" ${p.address || ""} ${p.city || "New York"}. Find: Google rating, customer reviews (verbatim quotes), Instagram handle and followers, how long they've been open, delivery or booking links, any press coverage.` }],
+          }),
+        });
+
+        if (searchRes.ok) {
+          const searchData = await searchRes.json();
+          const searchSummary = searchData.content?.filter(b => b.type === "text")?.map(b => b.text)?.join("\n") || "";
+          if (searchSummary) {
+            const formatRes = await fetch("https://api.anthropic.com/v1/messages", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "x-api-key": anthropicKey, "anthropic-version": "2023-06-01" },
+              body: JSON.stringify({
+                model: "claude-sonnet-4-5",
+                max_tokens: 2000,
+                system: "Extract structured business data. Output only the formatted fields, nothing else.",
+                messages: [{ role: "user", content: `From the search results below, extract this data. Write "none found" for anything missing. Never invent.
 
 FOUND: yes/no/partial
 RATING: [e.g. "4.8 stars · 43 Google reviews" or "none found"]
@@ -235,23 +243,23 @@ HAS_WEBSITE: yes/no
 
 Search results:
 ${searchSummary.slice(0, 4000)}` }],
-          }),
-        });
-
-        if (formatRes.ok) {
-          const formatData = await formatRes.json();
-          researchFindings = formatData.content?.find(b => b.type === "text")?.text || "";
-          console.log(`[${orderId}] Research complete: ${researchFindings.slice(0, 200)}`);
+              }),
+            });
+            if (formatRes.ok) {
+              const formatData = await formatRes.json();
+              researchFindings = formatData.content?.find(b => b.type === "text")?.text || "";
+              console.log(`[${orderId}] Research complete: ${researchFindings.slice(0, 200)}`);
+            }
+          }
         }
+      } catch(e) {
+        console.log(`[${orderId}] Research failed: ${e.message} — continuing without`);
       }
-    }
-  } catch(e) {
-    console.log(`[${orderId}] Research failed: ${e.message} — continuing without`);
-  }
 
-  const noResearch = !researchFindings || researchFindings.includes("FOUND: no");
+      const noResearch = !researchFindings || researchFindings.includes("FOUND: no");
 
-  // ── STEP 2: Build prompts ──────────────────────────────────────
+      // ── STEP 2: Build prompts ────────────────────────────────
+      send({ type: "status", message: "Building your site..." });
   const systemPrompt = `You are a senior web designer at a boutique agency. Your work is award-winning, distinctive, and makes business owners proud to share it.
 
 ABSOLUTE RULES:
@@ -360,47 +368,35 @@ ${typeContent}
 CONTACT SECTION (section 6):
 ${contactSection}`;
 
-  // ── STEP 3: Stream generation ──────────────────────────────────
-  console.log(`[${orderId}] Starting streaming generation`);
+      // ── STEP 3: Stream generation ──────────────────────────
+      console.log(`[${orderId}] Starting streaming generation`);
 
-  const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": anthropicKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-opus-4-5",
-      max_tokens: 22000,
-      stream: true,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userPrompt }],
-    }),
-  });
+      const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": anthropicKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: "claude-opus-4-5",
+          max_tokens: 22000,
+          stream: true,
+          system: systemPrompt,
+          messages: [{ role: "user", content: userPrompt }],
+        }),
+      });
 
-  if (!anthropicRes.ok) {
-    const err = await anthropicRes.text();
-    return new Response(JSON.stringify({ error: `Anthropic error ${anthropicRes.status}: ${err.slice(0,200)}` }), {
-      status: 500,
-      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-    });
-  }
+      if (!anthropicRes.ok) {
+        const err = await anthropicRes.text();
+        send({ type: "error", message: `Anthropic error ${anthropicRes.status}: ${err.slice(0,200)}` });
+        controller.close();
+        return;
+      }
 
-  // Stream the HTML back to the client as it generates
-  // We also accumulate the full HTML for post-processing (validation + save)
-  const encoder = new TextEncoder();
-  let fullHtml = "";
-  let outputTokens = 0;
-
-  const stream = new ReadableStream({
-    async start(controller) {
-      // Send orderId first so frontend can track the order
-      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "orderId", orderId })}\n\n`));
-
+      let fullHtml = "";
+      let outputTokens = 0;
       const reader = anthropicRes.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
 
       try {
         while (true) {
@@ -422,8 +418,7 @@ ${contactSection}`;
               if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
                 const chunk = event.delta.text;
                 fullHtml += chunk;
-                // Stream HTML chunk to client
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "html", chunk })}\n\n`));
+                send({ type: "html", chunk });
               }
 
               if (event.type === "message_delta" && event.usage) {
@@ -446,7 +441,7 @@ ${contactSection}`;
       fullHtml = fullHtml.replace(/^```html?\n?/i, "").replace(/\n?```$/m, "").trim();
 
       if (fullHtml.length < 500) {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", message: "AI returned empty response" })}\n\n`));
+        send({ type: "error", message: "AI returned empty response" });
         controller.close();
         return;
       }
@@ -576,8 +571,8 @@ Reply ONLY with: PASS or ISSUES: [description]` }],
         }
       }
 
-      // Send final complete HTML to client (for saving to Upstash on client side + display)
-      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "complete", htmlB64, orderId })}\n\n`));
+      // Send final complete HTML to client
+      send({ type: "complete", htmlB64, orderId });
       controller.close();
     }
   });
