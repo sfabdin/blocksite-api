@@ -57,54 +57,14 @@ export default async function handler(req, res) {
   const sitePhotoCount = isLogoFirst ? photoCount - 1 : photoCount;
   const subType        = p.subType || "other";
 
-  // ── Brand color extraction (alpha-aware, hue-clustered) ────────
-  // Only runs when a real logo is detected. Result feeds Pass 0.
-  let extractedColor = null;
-  if (logoUrl && !logoUrl.endsWith(".svg")) {
-    try {
-      const buf    = Buffer.from(await (await fetch(logoUrl)).arrayBuffer());
-      const isPNG  = buf[0] === 0x89 && buf[1] === 0x50;
-      const stride = isPNG ? 4 : 3;
-      const step   = Math.max(stride, Math.floor(buf.length / (800 * stride)) * stride);
-      const buckets = Array.from({ length: 36 }, () => ({ r: 0, g: 0, b: 0, score: 0 }));
-
-      for (let i = 0; i < buf.length - stride + 1; i += step) {
-        if (isPNG && buf[i + 3] < 128) continue;
-        const r = buf[i], g = buf[i + 1], b = buf[i + 2];
-        const max = Math.max(r, g, b), min = Math.min(r, g, b);
-        const L = (max + min) / 2;
-        if (L < 55 || L > 215) continue;
-        const sat = max === 0 ? 0 : (max - min) / max;
-        if (sat < 0.25) continue;
-        const delta = max - min;
-        let hue = 0;
-        if (delta > 0) {
-          hue = max === r ? 60 * (((g - b) / delta) % 6)
-              : max === g ? 60 * (((b - r) / delta) + 2)
-              :              60 * (((r - g) / delta) + 4);
-          if (hue < 0) hue += 360;
-        }
-        const bi    = Math.floor(hue / 10) % 36;
-        const score = sat * (0.7 + 0.3 * (1 - Math.abs(L - 140) / 140));
-        buckets[bi].r += r * score; buckets[bi].g += g * score;
-        buckets[bi].b += b * score; buckets[bi].score += score;
-      }
-      const merged = buckets.map((bk, i) => {
-        const pv = buckets[(i + 35) % 36], nx = buckets[(i + 1) % 36];
-        return { r: bk.r + pv.r * .5 + nx.r * .5, g: bk.g + pv.g * .5 + nx.g * .5,
-                 b: bk.b + pv.b * .5 + nx.b * .5, score: bk.score + pv.score * .5 + nx.score * .5 };
-      });
-      const w = merged.reduce((best, cur) => cur.score > best.score ? cur : best, merged[0]);
-      if (w.score > 0.5) {
-        const hex = v => Math.round(v / w.score).toString(16).padStart(2, "0");
-        extractedColor = `#${hex(w.r)}${hex(w.g)}${hex(w.b)}`;
-        console.log(`[${orderId}] Extracted color: ${extractedColor} (PNG: ${isPNG})`);
-      }
-    } catch (e) { console.log(`[${orderId}] Color extraction failed: ${e.message}`); }
-  }
-
-  // Owner-provided color always wins (from intake form field p.brandColor)
-  const confirmedColor = p.brandColor || extractedColor || null;
+  // ── Brand color: owner pick or SVG logo only ───────────────────
+  // Raster pixel extraction (JPEG/PNG) has proven unreliable — removed.
+  // Priority: 1) owner picked from swatches (p.brandColor)
+  //           2) SVG logo detected — Pass 1 reads it directly, no extraction needed
+  //           3) null → Pass 0 chooses by archetype
+  const confirmedColor = p.brandColor || null;
+  if (logoUrl) console.log(`[${orderId}] Logo detected: ${logoUrl.endsWith(".svg") ? "SVG" : "raster (color from swatches or Pass 0)"}`);
+  if (confirmedColor) console.log(`[${orderId}] Brand color: ${confirmedColor} (owner-selected)`);
 
   // ── Research (fires immediately) ───────────────────────────────
   console.log(`[${orderId}] Firing Pass 0 + research in parallel`);
@@ -153,72 +113,97 @@ Only verified facts. Never invent anything.`,
     try {
       const data = await callClaude({
         model: "claude-haiku-4-5-20251001",
-        max_tokens: 1200,
+        max_tokens: 2000,
         system: `You are a content planning tool for a local business website generator.
-Output ONLY valid JSON — no markdown fences, no explanation, no preamble.
-The JSON must be parseable by JSON.parse() with no modifications.`,
+Output ONLY valid JSON. No markdown fences, no explanation, no preamble, no trailing text.
+Be concise — keep all string values under 80 characters. The JSON must close properly.`,
         messages: [{
           role: "user",
-          content: `Create a content plan for this business:
+          content: `Create a content plan for this business. Be concise — short strings only.
 
 Name: ${p.businessName}
 Type: ${typeLabel} · subType: ${subType}
 City: ${p.city || "New York"}
-Vibe: "${p.vibe || "Warm, welcoming, community-first"}"
-Description: ${p.description || ""}
-Owner content: ${p.typeSpecific || ""}
-Photos available: ${sitePhotoCount} site photos + ${logoUrl ? "1 logo" : "no logo"}
-Confirmed brand color: ${confirmedColor || "none — choose by archetype"}
+Vibe: "${(p.vibe || "Warm, welcoming, community-first").slice(0, 200)}"
+Description: ${(p.description || "").slice(0, 300)}
+Owner content: ${(p.typeSpecific || "").slice(0, 300)}
+Photos: ${sitePhotoCount} site photos + ${logoUrl ? "1 logo" : "no logo"}
+Brand color: ${confirmedColor || "none — choose by archetype"}
 Founded: ${p.foundedYear || "unknown"}
 
-Output this exact JSON shape (fill in all values, no nulls for arrays):
+Output this exact JSON (no extra fields, all strings concise):
 
 {
-  "heroHeadline": "short punchy headline, 4-7 words",
-  "heroTagline": "one sentence, 12-18 words, specific to this business",
+  "heroHeadline": "4-7 word punchy headline",
+  "heroTagline": "one sentence, under 18 words",
   "palette": {
-    "accent": "hex color — use confirmedColor if provided, else choose deliberately by archetype. Auto body = charcoal+orange-red. Salon = warm gold or rose. Pharmacy = trust blue. Restaurant = deep red or warm amber. Church = deep burgundy or navy. Law = deep navy. Nail salon = soft blush or teal. Never default to generic blue unless type demands it.",
-    "background": "hex — dark near-black for industrial/moody types, warm off-white for soft types",
-    "isDark": true or false
+    "accent": "${confirmedColor || "hex — restaurant=deep red/amber, autobody=orange-red, salon=gold/rose, wellness=teal, church=burgundy, law=navy, never generic blue"}",
+    "background": "hex — dark near-black for moody types, warm off-white for soft",
+    "isDark": true
   },
-  "sections": ["hero", then section ids in order — choose from: services, menu, specials, portfolio, worship, programs, about, testimonials, contact],
+  "sections": ["hero","menu","about","contact"],
   "contentSection": {
-    "id": "services|menu|specials|portfolio|worship|programs",
-    "heading": "section heading",
+    "id": "menu",
+    "heading": "Our Menu",
     "items": [
-      {
-        "name": "service/item name",
-        "icon": "one of: car-damage | spray-gun | tow-truck | car-window-tint | car-restoration | clipboard-check | scissors | comb | razor | nail-polish | spray-bottle | washing-machine | needle-thread | abc-blocks | open-book | lotus | dumbbell | fork-knife | cake | food-truck | serving-dish | flower | dove | arch-door | camera | mortar-pestle | storefront | shopping-basket | scales | document-stamp | passport | clock | shield | phone | pin | star | check-circle | quote",
-        "desc": "one sentence description"
-      }
+      {"name": "item name", "icon": "fork-knife", "desc": "one short sentence"}
     ]
   },
   "contactLayout": {
-    "primaryCTA": { "label": "CTA label", "type": "tel|url|anchor", "value": "${p.phone || "#contact"}" },
+    "primaryCTA": {"label": "Reserve a Table", "type": "tel", "value": "${p.phone || "#contact"}"},
     "infoItems": [
-      { "icon": "phone|pin|clock|shield|mail|globe", "label": "label", "value": "display value", "link": "href value or null" }
+      {"icon": "phone", "label": "Call Us", "value": "${p.phone || ""}", "link": "tel:${p.phone || ""}"},
+      {"icon": "pin", "label": "Visit Us", "value": "${p.address || ""}", "link": null},
+      {"icon": "clock", "label": "Hours", "value": "${p.hours || ""}", "link": null}
     ],
-    "showForm": true or false,
-    "formLabel": "Send us a message | Request a Quote | Get a Free Assessment | etc"
+    "showForm": ${!!p.email},
+    "formLabel": "Send us a message"
   },
   "footer": {
-    "tagline": "short brand tagline",
-    "columns": ["brand", "links", "contact"]
+    "tagline": "short tagline under 10 words",
+    "columns": ["brand","links","contact"]
   },
-  "navLinks": ["Services|Menu|Specials|Portfolio|Worship|Programs", "About", "Contact"],
+  "navLinks": ["Menu","About","Contact"],
   "logoTreatment": "${logoUrl ? (logoUrl.endsWith(".svg") ? "svg-both" : "raster-footer-only") : "wordmark"}",
   "photoLayout": {
-    "hero": "${sitePhotos[0] || null}",
-    "about": "${sitePhotos[1] || null}",
+    "hero": ${sitePhotos[0] ? `"${sitePhotos[0]}"` : "null"},
+    "about": ${sitePhotos[1] ? `"${sitePhotos[1]}"` : "null"},
     "gallery": ${JSON.stringify(sitePhotos.slice(2, 4))}
   }
-}`,
+}
+
+Fill in real values for this specific business. Keep ALL strings short. The contentSection.items array should have ${Math.min((p.typeSpecific || "").split("\n").filter(Boolean).length || 4, 8)} items max.`,
         }],
       });
-      const raw  = data.content?.find(b => b.type === "text")?.text || "{}";
-      const clean = raw.replace(/^```(?:json)?\n?/im, "").replace(/\n?```$/m, "").trim();
-      const plan  = JSON.parse(clean);
-      console.log(`[${orderId}] Pass 0 done. Accent: ${plan.palette?.accent}, Services: ${plan.contentSection?.items?.length}`);
+
+      const raw = data.content?.find(b => b.type === "text")?.text || "{}";
+
+      // Strip markdown fences if present
+      let clean = raw.replace(/^```(?:json)?\n?/im, "").replace(/\n?```$/m, "").trim();
+
+      // Resilient parse: if JSON is truncated, attempt to close it
+      let plan;
+      try {
+        plan = JSON.parse(clean);
+      } catch (parseErr) {
+        // Try to salvage truncated JSON by finding the last complete top-level field
+        // and closing the object. Common truncation point is inside a string value.
+        const lastGoodBrace = clean.lastIndexOf(',"navLinks"');
+        const lastGoodAlt   = clean.lastIndexOf(',"footer"');
+        const cutAt = lastGoodBrace > -1 ? lastGoodBrace : lastGoodAlt > -1 ? lastGoodAlt : -1;
+        if (cutAt > -1) {
+          try {
+            plan = JSON.parse(clean.slice(0, cutAt) + "}");
+            console.log(`[${orderId}] Pass 0 JSON repaired at char ${cutAt}`);
+          } catch {
+            throw parseErr; // fall through to outer catch → fallback
+          }
+        } else {
+          throw parseErr;
+        }
+      }
+
+      console.log(`[${orderId}] Pass 0 done. Accent: ${plan.palette?.accent}, Items: ${plan.contentSection?.items?.length}`);
       return plan;
     } catch (e) {
       console.log(`[${orderId}] Pass 0 failed: ${e.message} — using fallback`);
@@ -294,7 +279,8 @@ Output this exact JSON shape (fill in all values, no nulls for arrays):
 
   const researchFindings = researchRaw;
   const research         = parseResearch(researchFindings);
-  console.log(`[${orderId}] Research: ${research ? "found" : "none"} | Rating: ${research?.rating || "—"} | Reviews: ${research?.reviews?.length || 0}`);
+  console.log(`[${orderId}] Research: ${research ? "FOUND" : "not found"} | Rating: ${research?.rating || "—"} | Reviews: ${research?.reviews?.length || 0} | Press: ${research?.press || "—"} | Social: ${research?.social || "—"} | History: ${research?.history || "—"} | Ordering: ${research?.orderingLinks || "—"} | Booking: ${research?.bookingLinks || "—"}`);
+  if (researchFindings) console.log(`[${orderId}] Raw research:\n${researchFindings.slice(0, 800)}`);
 
   // Add testimonials to section order if we have real reviews
   if (research?.reviews?.length >= 2 && !plan.sections.includes("testimonials")) {
