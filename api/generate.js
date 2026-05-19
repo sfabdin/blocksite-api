@@ -1,6 +1,5 @@
 // api/generate.js - Vercel Edge Runtime, streaming
 // v6 — streaming generation, no timeout risk, live preview as HTML builds
-
 export const config = { runtime: "edge" };
 
 export default async function handler(req) {
