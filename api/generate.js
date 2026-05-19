@@ -19,7 +19,7 @@ export default async function handler(req) {
     return new Response(JSON.stringify({ error: "Method not allowed" }), { status: 405 });
   }
 
-  const anthropicKey = Deno?.env?.get("ANTHROPIC_API_KEY") || process.env?.ANTHROPIC_API_KEY;
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
   if (!anthropicKey) {
     return new Response(JSON.stringify({ error: "ANTHROPIC_API_KEY not configured" }), { status: 500 });
   }
@@ -511,8 +511,8 @@ Reply ONLY with: PASS or ISSUES: [description]` }],
       }
 
       // ── Save to Upstash ──────────────────────────────────────
-      const upstashUrl = Deno?.env?.get("UPSTASH_REDIS_REST_URL") || process.env?.UPSTASH_REDIS_REST_URL;
-      const upstashToken = Deno?.env?.get("UPSTASH_REDIS_REST_TOKEN") || process.env?.UPSTASH_REDIS_REST_TOKEN;
+      const upstashUrl = process.env.UPSTASH_REDIS_REST_URL;
+      const upstashToken = process.env.UPSTASH_REDIS_REST_TOKEN;
 
       // Base64 encode without Buffer (Edge compatible)
       const htmlBytes = new TextEncoder().encode(fullHtml);
@@ -540,9 +540,9 @@ Reply ONLY with: PASS or ISSUES: [description]` }],
       }
 
       // ── Owner notification ────────────────────────────────────
-      const resendKey = Deno?.env?.get("RESEND_API_KEY") || process.env?.RESEND_API_KEY;
-      const ownerEmail = Deno?.env?.get("OWNER_EMAIL") || process.env?.OWNER_EMAIL;
-      const fromEmail = Deno?.env?.get("FROM_EMAIL") || process.env?.FROM_EMAIL || "BlockSite <hello@blocksitebuilder.com>";
+      const resendKey = process.env.RESEND_API_KEY;
+      const ownerEmail = process.env.OWNER_EMAIL;
+      const fromEmail = process.env.FROM_EMAIL || "BlockSite <hello@blocksitebuilder.com>";
       const bizSlug = (p.businessName || "website").toLowerCase().replace(/\s+/g, "-");
 
       if (resendKey && ownerEmail) {
