@@ -397,6 +397,8 @@ ${contactSection}`;
       let fullHtml = "";
       let outputTokens = 0;
       const reader = anthropicRes.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
 
       try {
         while (true) {
