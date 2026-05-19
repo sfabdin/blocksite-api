@@ -370,7 +370,6 @@ ${contactSection}`;
       "Content-Type": "application/json",
       "x-api-key": anthropicKey,
       "anthropic-version": "2023-06-01",
-      "anthropic-beta": "interleaved-thinking-2025-05-14",
     },
     body: JSON.stringify({
       model: "claude-opus-4-5",
@@ -516,7 +515,12 @@ Reply ONLY with: PASS or ISSUES: [description]` }],
 
       // Base64 encode without Buffer (Edge compatible)
       const htmlBytes = new TextEncoder().encode(fullHtml);
-      const htmlB64 = btoa(String.fromCharCode(...htmlBytes));
+      let htmlB64 = "";
+      const chunkSize = 8192;
+      for (let i = 0; i < htmlBytes.length; i += chunkSize) {
+        htmlB64 += String.fromCharCode(...htmlBytes.slice(i, i + chunkSize));
+      }
+      htmlB64 = btoa(htmlB64);
 
       if (upstashUrl && upstashToken) {
         try {
