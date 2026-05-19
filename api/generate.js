@@ -112,14 +112,13 @@ export default async function handler(req, res) {
   const researchPromise = (async () => {
     try {
       const data = await callClaude({
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-4-6",
         max_tokens: 4000,
-        beta: "web-search-2025-03-05",
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
+        tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 3 }],
         system: "Business research tool. First characters of response must be 'FOUND:'. No preamble.",
         messages: [{
           role: "user",
-          content: `Search for "${p.businessName}" at ${p.address || ""} ${p.city || "New York"}.
+          content: `Search for "${p.businessName}" ${p.address ? `at ${p.address}` : ""} ${p.city || "New York"}.
 Start with FOUND: immediately — no preamble.
 
 FOUND: yes/no/partial
