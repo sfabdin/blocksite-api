@@ -71,14 +71,21 @@ export default async function handler(req, res) {
 
   const researchPromise = (async () => {
     try {
-      const data = await callClaude({
-        model: "claude-sonnet-4-6",
-        max_tokens: 4000,
-        tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 3 }],
-        system: "Business research tool. First characters of response must be 'FOUND:'. No preamble.",
-        messages: [{
-          role: "user",
-          content: `Search for "${p.businessName}" ${p.address ? `at ${p.address}` : ""} ${p.city || "New York"}.
+      // Hard 45s cap — research must never block Pass 1/2
+      const timeoutPromise = new Promise(resolve => setTimeout(() => {
+        console.log(`[${orderId}] Research timed out after 45s — continuing without`);
+        resolve("");
+      }, 45000));
+
+      const fetchPromise = (async () => {
+        const data = await callClaude({
+          model: "claude-sonnet-4-6",
+          max_tokens: 2000,
+          tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 1 }],
+          system: "Business research tool. First characters of response must be 'FOUND:'. No preamble.",
+          messages: [{
+            role: "user",
+            content: `Search for "${p.businessName}" ${p.address ? `at ${p.address}` : ""} ${p.city || "New York"}.
 Start with FOUND: immediately — no preamble.
 
 FOUND: yes/no/partial
@@ -92,11 +99,14 @@ HISTORY: [founding year or notable history or "none found"]
 HAS_WEBSITE: yes/no
 
 Only verified facts. Never invent anything.`,
-        }],
-      });
-      const raw = data.content?.find(b => b.type === "text")?.text || "";
-      const idx = raw.indexOf("FOUND:");
-      return idx >= 0 ? raw.slice(idx) : raw;
+          }],
+        });
+        const raw = data.content?.find(b => b.type === "text")?.text || "";
+        const idx = raw.indexOf("FOUND:");
+        return idx >= 0 ? raw.slice(idx) : raw;
+      })();
+
+      return await Promise.race([fetchPromise, timeoutPromise]);
     } catch (e) {
       console.log(`[${orderId}] Research failed: ${e.message}`);
       return "";
@@ -781,7 +791,7 @@ SEO: <h1> includes city. City appears 3-4× total. Every <img> has descriptive a
 
   const pass2Data = await callClaude({
     model: "claude-opus-4-5",
-    max_tokens: 13000,
+    max_tokens: 11000,
     system: `You are a senior front-end developer. Build the HTML file exactly as specified.
 RULES:
 - Raw HTML only. Start <!DOCTYPE html>. End </html>. No markdown, no fences.
