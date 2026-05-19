@@ -38,33 +38,34 @@ export default async function handler(req, res) {
   const sitePhotoCount = isLogoFirst ? photoCount - 1 : photoCount;
 
   // ── Extract dominant brand color from logo ─────────────────────
-  // Runs in parallel with research. Samples pixels, skips near-black/white,
-  // returns the most saturated color as a hex string.
   let brandColor = null;
   if (logoUrl && !logoUrl.endsWith(".svg")) {
     try {
       const imgRes = await fetch(logoUrl);
       const buf = Buffer.from(await imgRes.arrayBuffer());
-      // Simple PNG/JPEG pixel sampler — read raw bytes to find dominant hue
-      // We look for the most saturated non-neutral pixel across a grid sample
-      let bestH = 0, bestS = 0, bestR = 128, bestG = 128, bestB = 128;
-      // Sample every ~20th byte triplet from the raw buffer (rough but fast)
-      const stride = Math.max(3, Math.floor(buf.length / 500) * 3);
+      // Sample pixels, find the most saturated pixel that isn't too dark or too light
+      // Weight toward mid-range lightness (50-180) to avoid shadows and backgrounds
+      let bestScore = 0, bestR = 0, bestG = 0, bestB = 0;
+      const stride = Math.max(3, Math.floor(buf.length / 800) * 3);
       for (let i = 0; i < buf.length - 2; i += stride) {
         const r = buf[i], g = buf[i+1], b = buf[i+2];
-        // Skip near-black, near-white, and near-grey
         const max = Math.max(r, g, b), min = Math.min(r, g, b);
         const lightness = (max + min) / 2;
-        if (lightness < 30 || lightness > 220) continue;
+        // Skip very dark (shadow/background) and very light (white background)
+        if (lightness < 60 || lightness > 210) continue;
         const saturation = max === 0 ? 0 : (max - min) / max;
-        if (saturation > bestS) {
-          bestS = saturation;
+        if (saturation < 0.3) continue; // skip greys
+        // Score = saturation * lightness bonus (prefer mid-bright over dark)
+        const lightnessBonus = 1 - Math.abs(lightness - 140) / 140;
+        const score = saturation * (0.7 + 0.3 * lightnessBonus);
+        if (score > bestScore) {
+          bestScore = score;
           bestR = r; bestG = g; bestB = b;
         }
       }
-      if (bestS > 0.2) {
+      if (bestScore > 0.3) {
         brandColor = `#${bestR.toString(16).padStart(2,"0")}${bestG.toString(16).padStart(2,"0")}${bestB.toString(16).padStart(2,"0")}`;
-        console.log(`[${orderId}] Extracted brand color: ${brandColor} (saturation: ${bestS.toFixed(2)})`);
+        console.log(`[${orderId}] Extracted brand color: ${brandColor} (score: ${bestScore.toFixed(2)})`);
       }
     } catch(e) {
       console.log(`[${orderId}] Color extraction failed: ${e.message}`);
@@ -244,25 +245,22 @@ Use an asymmetric masonry-style layout — vary sizes, never an equal grid.`;
         },
         body: JSON.stringify({
           model: "claude-sonnet-4-5",
-          max_tokens: 3000,
-          system: "You are a business research tool. Search for the business, then immediately output ONLY the structured data in the format requested. No preamble, no explanation, no markdown. Start your response with 'FOUND:'",
+          max_tokens: 4000,
+          system: "You are a business research tool. After searching, output ONLY the structured data below. No intro sentences. No 'Based on my research'. Start directly with 'FOUND:'",
           tools: [{ type: "web_search_20250305", name: "web_search" }],
-          messages: [
-            { role: "user", content: `Search for "${p.businessName}" at ${p.address || ""} ${p.city || "New York"}. Then fill out this form with what you found:
+          messages: [{ role: "user", content: `Search for "${p.businessName}" at ${p.address || ""} ${p.city || "New York"}. Output exactly this format after searching — nothing before FOUND:
 
 FOUND: yes/no/partial
 RATING: [e.g. "4.8 stars · 43 Google reviews" or "none found"]
-REVIEWS: [2-3 real quotes, format: "Quote" — Name, Platform. Or "none found"]
+REVIEWS: [2-3 real quotes as: "Quote text" — FirstName, Platform. Or "none found"]
 ORDERING_LINKS: [real URLs only, or "n/a"]
 BOOKING_LINKS: [real URLs only, or "n/a"]
 PRESS: [coverage/awards or "none found"]
 SOCIAL: [e.g. "@handle · 517 followers" or "none found"]
-HISTORY: [founding year, history or "none found"]
+HISTORY: [founding year or notable history or "none found"]
 HAS_WEBSITE: yes/no
 
-Never invent data. Only verified facts.` },
-            { role: "assistant", content: "FOUND:" }
-          ],
+Only verified facts. Never invent anything.` }],
         }),
       });
       if (!researchRes.ok) {
@@ -270,8 +268,7 @@ Never invent data. Only verified facts.` },
         return "";
       }
       const data = await researchRes.json();
-      const rawText = data.content?.find(b => b.type === "text")?.text || "";
-      const text = rawText ? "FOUND:" + rawText : "";
+      const text = data.content?.find(b => b.type === "text")?.text || "";
       console.log(`[${orderId}] Research complete: ${text.slice(0, 150)}`);
       return text;
     } catch(e) {
@@ -539,42 +536,30 @@ Be strict. A phone number formatted differently is fine. A completely different 
 
         if (valResult.startsWith("ISSUES:")) {
           console.warn(`[${orderId}] Validation flagged issues: ${valResult}`);
-          // Auto-fix: ask Claude to correct the specific issues
+          // Fast surgical fix — patch only the JSON-LD schema, no API call needed
           try {
-            const fixRes = await fetch("https://api.anthropic.com/v1/messages", {
-              method: "POST",
-              headers: { "Content-Type": "application/json", "x-api-key": anthropicKey, "anthropic-version": "2023-06-01" },
-              body: JSON.stringify({
-                model: "claude-sonnet-4-5",
-                max_tokens: 16000,
-                messages: [{ role: "user", content: `Fix ONLY the following issues in this HTML. Make NO other changes.
-
-ISSUES TO FIX:
-${valResult.replace("ISSUES:", "").trim()}
-
-CORRECT DATA:
-- Phone: ${p.phone || "remove any phone not matching this"}
-- Hours: ${p.hours || "remove any invented hours"}
-- Email: ${p.email || "remove any email not matching this"}
-- Prices: only show prices the owner provided
-- Reviews: only show reviews from the research data
-
-Return the complete corrected HTML. Raw HTML only, no explanation.
-
-HTML:
-${html}` }],
-              }),
-            });
-            if (fixRes.ok) {
-              const fixData = await fixRes.json();
-              const fixedHtml = fixData.content?.find(b => b.type === "text")?.text?.replace(/^```html?\n?/i, "").replace(/\n?```$/m, "").trim();
-              if (fixedHtml && fixedHtml.length > 500) {
-                html = fixedHtml;
-                console.log(`[${orderId}] Auto-fix applied successfully`);
+            // Remove invented priceRange
+            if (valResult.includes("price") || valResult.includes("Price")) {
+              html = html.replace(/"priceRange"\s*:\s*"[^"]*"/g, '"priceRange": "Contact for pricing"');
+            }
+            // Fix invented hours in JSON-LD schema
+            if (valResult.includes("hours") || valResult.includes("Hours")) {
+              if (p.hours) {
+                // Replace the whole openingHours array/string with what owner provided
+                html = html.replace(/"openingHours"\s*:\s*(\[[^\]]*\]|"[^"]*")/g,
+                  `"openingHours": "${p.hours}"`);
+              } else {
+                // No hours provided — remove the field entirely
+                html = html.replace(/"openingHours"\s*:\s*(\[[^\]]*\]|"[^"]*")\s*,?/g, '');
               }
             }
+            // Fix invented phone
+            if (valResult.includes("phone") && p.phone) {
+              html = html.replace(/"telephone"\s*:\s*"[^"]*"/g, `"telephone": "${p.phone}"`);
+            }
+            console.log(`[${orderId}] Fast fix applied to schema`);
           } catch(fixErr) {
-            console.log(`[${orderId}] Auto-fix failed: ${fixErr.message} — using original`);
+            console.log(`[${orderId}] Fast fix failed: ${fixErr.message}`);
           }
         }
       }
