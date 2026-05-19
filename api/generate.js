@@ -1,7 +1,8 @@
 // api/generate.js - Vercel serverless function
 // Max duration: 300 seconds (set in vercel.json)
-// v6 — alpha-channel color fix, tighter color prompting, research cleanup,
-//       better validation patching, truncation guard, JSON photo manifest
+// v7 — two-pass generation (design system → HTML), research surfaced on site,
+//       alpha-channel color fix, hue clustering, research preamble stripping,
+//       expanded validation patching, truncation guard, JSON photo manifest
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -15,8 +16,25 @@ export default async function handler(req, res) {
 
   const p = req.body;
   const orderId = `BS-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-
   console.log(`[${orderId}] Generating for: ${p.businessName}, photos: ${p.photoCount || 0}`);
+
+  // ── Shared fetch wrapper ───────────────────────────────────────
+  async function callClaude({ model, system, messages, max_tokens, tools, beta }) {
+    const headers = {
+      "Content-Type": "application/json",
+      "x-api-key": anthropicKey,
+      "anthropic-version": "2023-06-01",
+    };
+    if (beta) headers["anthropic-beta"] = beta;
+    const body = { model, max_tokens, messages };
+    if (system) body.system = system;
+    if (tools)  body.tools  = tools;
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST", headers, body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`Anthropic ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    return r.json();
+  }
 
   // ── Derived constants ──────────────────────────────────────────
   const typeLabel =
@@ -28,276 +46,112 @@ export default async function handler(req, res) {
     `${p.businessName || ""} ${p.address || ""} ${p.city || ""}`.trim()
   );
 
-  const photoUrls   = p.photoUrls || [];
-  const photoCount  = p.photoCount || photoUrls.length || 0;
-
-  // Detect logo (first photo is SVG, or URL contains logo/brand/icon)
-  const firstUrl   = photoUrls[0] || "";
-  const isLogoFirst = firstUrl.endsWith(".svg") || /logo|brand|icon/i.test(firstUrl);
-  const logoUrl    = isLogoFirst ? firstUrl : null;
-  const sitePhotos = isLogoFirst ? photoUrls.slice(1) : photoUrls;
+  const photoUrls      = p.photoUrls || [];
+  const photoCount     = p.photoCount || photoUrls.length || 0;
+  const firstUrl       = photoUrls[0] || "";
+  const isLogoFirst    = firstUrl.endsWith(".svg") || /logo|brand|icon/i.test(firstUrl);
+  const logoUrl        = isLogoFirst ? firstUrl : null;
+  const sitePhotos     = isLogoFirst ? photoUrls.slice(1) : photoUrls;
   const sitePhotoCount = isLogoFirst ? photoCount - 1 : photoCount;
+  const subType        = p.subType || "other";
 
-  // ── FIX 1: Extract brand color with proper alpha handling ──────
+  // ── Brand color extraction (alpha-aware, hue-clustered) ────────
   let brandColor = null;
   if (logoUrl && !logoUrl.endsWith(".svg")) {
     try {
-      const imgRes = await fetch(logoUrl);
-      const buf    = Buffer.from(await imgRes.arrayBuffer());
+      const buf    = Buffer.from(await (await fetch(logoUrl)).arrayBuffer());
+      const isPNG  = buf[0] === 0x89 && buf[1] === 0x50;
+      const stride = isPNG ? 4 : 3;
+      const step   = Math.max(stride, Math.floor(buf.length / (800 * stride)) * stride);
+      const buckets = Array.from({ length: 36 }, () => ({ r: 0, g: 0, b: 0, score: 0 }));
 
-      // Detect PNG by magic bytes (PNG = 0x89 0x50 0x4E 0x47)
-      const isPNG    = buf.length > 4 && buf[0] === 0x89 && buf[1] === 0x50;
-      // Detect JPEG by magic bytes (JPEG = 0xFF 0xD8)
-      const isJPEG   = buf.length > 2 && buf[0] === 0xFF && buf[1] === 0xD8;
-      const chanStride = isPNG ? 4 : 3; // RGBA vs RGB
-
-      // For JPEG we can sample directly; for PNG we need to skip encoded chunks
-      // Simple fallback: treat unknown formats as RGB (3-byte stride)
-      const byteStride = chanStride;
-
-      // Sample ~800 pixels evenly across the buffer
-      const sampleEvery = Math.max(byteStride, Math.floor(buf.length / (800 * byteStride)) * byteStride);
-
-      // Accumulate candidates into hue buckets for simple clustering
-      const hueBuckets = new Array(36).fill(null).map(() => ({ r: 0, g: 0, b: 0, count: 0, score: 0 }));
-
-      for (let i = 0; i < buf.length - (byteStride - 1); i += sampleEvery) {
-        const r = buf[i];
-        const g = buf[i + 1];
-        const b = buf[i + 2];
-
-        // FIX: Skip transparent/semi-transparent pixels (alpha channel)
-        if (isPNG) {
-          const alpha = buf[i + 3];
-          if (alpha < 128) continue; // transparent — skip, this was your hot pink source
-        }
-
-        const max = Math.max(r, g, b);
-        const min = Math.min(r, g, b);
-        const lightness = (max + min) / 2;
-
-        // Skip near-black (shadows) and near-white (backgrounds)
-        if (lightness < 55 || lightness > 215) continue;
-
-        const saturation = max === 0 ? 0 : (max - min) / max;
-        if (saturation < 0.25) continue; // skip greys and near-grey
-
-        // Compute hue (0-360)
-        let hue = 0;
+      for (let i = 0; i < buf.length - stride + 1; i += step) {
+        if (isPNG && buf[i + 3] < 128) continue; // skip transparent pixels
+        const r = buf[i], g = buf[i + 1], b = buf[i + 2];
+        const max = Math.max(r, g, b), min = Math.min(r, g, b);
+        const L = (max + min) / 2;
+        if (L < 55 || L > 215) continue;
+        const sat = max === 0 ? 0 : (max - min) / max;
+        if (sat < 0.25) continue;
         const delta = max - min;
+        let hue = 0;
         if (delta > 0) {
-          if (max === r)      hue = 60 * (((g - b) / delta) % 6);
-          else if (max === g) hue = 60 * (((b - r) / delta) + 2);
-          else                hue = 60 * (((r - g) / delta) + 4);
+          hue = max === r ? 60 * (((g - b) / delta) % 6)
+              : max === g ? 60 * (((b - r) / delta) + 2)
+              :              60 * (((r - g) / delta) + 4);
           if (hue < 0) hue += 360;
         }
-
-        // Bucket by hue (10° buckets)
-        const bucketIdx = Math.floor(hue / 10) % 36;
-        const lightnessBonus = 1 - Math.abs(lightness - 140) / 140;
-        const score = saturation * (0.7 + 0.3 * lightnessBonus);
-
-        hueBuckets[bucketIdx].r     += r * score;
-        hueBuckets[bucketIdx].g     += g * score;
-        hueBuckets[bucketIdx].b     += b * score;
-        hueBuckets[bucketIdx].score += score;
-        hueBuckets[bucketIdx].count += 1;
+        const bi    = Math.floor(hue / 10) % 36;
+        const score = sat * (0.7 + 0.3 * (1 - Math.abs(L - 140) / 140));
+        buckets[bi].r     += r * score;
+        buckets[bi].g     += g * score;
+        buckets[bi].b     += b * score;
+        buckets[bi].score += score;
       }
 
-      // Merge adjacent hue buckets (±1 bucket = ±10°) to handle hue spread
-      const merged = hueBuckets.map((bucket, idx) => {
-        const prev = hueBuckets[(idx + 35) % 36];
-        const next = hueBuckets[(idx + 1)  % 36];
+      // Merge adjacent hue buckets to handle hue spread
+      const merged = buckets.map((bk, i) => {
+        const pv = buckets[(i + 35) % 36], nx = buckets[(i + 1) % 36];
         return {
-          r:     bucket.r     + prev.r     * 0.5 + next.r     * 0.5,
-          g:     bucket.g     + prev.g     * 0.5 + next.g     * 0.5,
-          b:     bucket.b     + prev.b     * 0.5 + next.b     * 0.5,
-          score: bucket.score + prev.score * 0.5 + next.score * 0.5,
+          r:     bk.r     + pv.r     * 0.5 + nx.r     * 0.5,
+          g:     bk.g     + pv.g     * 0.5 + nx.g     * 0.5,
+          b:     bk.b     + pv.b     * 0.5 + nx.b     * 0.5,
+          score: bk.score + pv.score * 0.5 + nx.score * 0.5,
         };
       });
 
-      // Pick the winning cluster
-      const winner = merged.reduce((best, cur) => cur.score > best.score ? cur : best, merged[0]);
-
-      if (winner.score > 0.5) {
-        const wr = Math.round(winner.r / winner.score);
-        const wg = Math.round(winner.g / winner.score);
-        const wb = Math.round(winner.b / winner.score);
-        brandColor = `#${wr.toString(16).padStart(2, "0")}${wg.toString(16).padStart(2, "0")}${wb.toString(16).padStart(2, "0")}`;
-        console.log(`[${orderId}] Extracted brand color: ${brandColor} (score: ${winner.score.toFixed(2)}, isPNG: ${isPNG})`);
+      const w = merged.reduce((best, cur) => cur.score > best.score ? cur : best, merged[0]);
+      if (w.score > 0.5) {
+        const hex = v => Math.round(v / w.score).toString(16).padStart(2, "0");
+        brandColor = `#${hex(w.r)}${hex(w.g)}${hex(w.b)}`;
+        console.log(`[${orderId}] Brand color: ${brandColor} (score ${w.score.toFixed(2)}, PNG: ${isPNG})`);
       }
     } catch (e) {
       console.log(`[${orderId}] Color extraction failed: ${e.message}`);
     }
   }
 
-  // ── FIX 2: Structured JSON photo manifest ─────────────────────
+  // ── Photo manifest ─────────────────────────────────────────────
   const photoManifest = JSON.stringify({
-    hero:    sitePhotos[0]          || null,
+    hero:    sitePhotos[0] || null,
     gallery: sitePhotos.slice(1, 4),
     total:   sitePhotoCount,
   });
 
   const photoLayout =
     sitePhotoCount === 0
-      ? "ZERO PHOTOS: Bold typographic design. Large color blocks, oversized type, decorative CSS shapes and lines. Must feel intentionally designed, not empty."
+      ? "ZERO PHOTOS: Bold typographic design. Large color blocks, oversized type, decorative CSS shapes. Must feel intentionally designed, not empty."
       : sitePhotos.length > 0
-        ? `PHOTO MANIFEST (JSON — use these exact URLs, in this exact order, no substitutions):\n${photoManifest}\n\nLayout rules:\n- hero: full-height background-image with dark overlay in the hero section\n- gallery[0]: 50/50 editorial split in about section (photo left, text right on desktop)\n- gallery[1..]: asymmetric masonry gallery, vary sizes, never an equal grid\n- Never reuse the hero URL in the gallery`
-        : (() => {
-            if (sitePhotoCount === 1)  return `ONE PHOTO: HERO_PHOTO_PLACEHOLDER as hero background-image with dark overlay.`;
-            if (sitePhotoCount === 2)  return `TWO PHOTOS: HERO_PHOTO_PLACEHOLDER as hero background. PHOTO_1_PLACEHOLDER in 50/50 about section split.`;
-            return `${sitePhotoCount} PHOTOS: HERO_PHOTO_PLACEHOLDER as hero background. PHOTO_1_PLACEHOLDER through PHOTO_${Math.min(sitePhotoCount, 4)}_PLACEHOLDER in asymmetric gallery.`;
-          })();
+        ? `PHOTO MANIFEST (JSON — exact URLs, exact order, no substitutions):\n${photoManifest}\n\nRules:\n- hero → full-height background-image + dark overlay\n- gallery[0] → 50/50 editorial split in about section\n- gallery[1+] → asymmetric masonry, vary sizes\n- Never reuse hero URL in gallery`
+        : sitePhotoCount === 1 ? "ONE PHOTO: HERO_PHOTO_PLACEHOLDER as hero background with dark overlay."
+        : sitePhotoCount === 2 ? "TWO PHOTOS: HERO_PHOTO_PLACEHOLDER hero. PHOTO_1_PLACEHOLDER in 50/50 about split."
+        : `${sitePhotoCount} PHOTOS: HERO_PHOTO_PLACEHOLDER hero. PHOTO_1 through PHOTO_${Math.min(sitePhotoCount, 4)} in asymmetric gallery.`;
 
-  const subType = p.subType || "other";
+  // ── Color instruction ──────────────────────────────────────────
+  const colorInstruction = brandColor
+    ? `PRIMARY BRAND COLOR (pixel-extracted from logo — use exactly): ${brandColor}
+COLOR RULES — non-negotiable:
+- ${brandColor} is the ONLY accent hue. Use it for all buttons, active nav, highlights, borders.
+- Do NOT introduce any unrelated hue (no pinks, no blues, no purples unless ${brandColor} is in that family).
+- Background: deep warm neutral or near-black that makes ${brandColor} pop.
+- Secondary accent: derive only by lightening ${brandColor} 20% or darkening 30% — never invent a new hue.
+- If ${brandColor} is orange (high R, medium G, low B): render it as orange, not yellow and not pink.`
+    : `COLOR: Build a deliberate palette matching the vibe. Two brand colors + two neutrals. No generic blues.`;
 
-  // ── Subtype-aware layout archetype ─────────────────────────────
-  const typeLayout =
-    p.businessType === "restaurant"
-      ? subType === "bakery"
-        ? "BAKERY/CAFÉ ARCHETYPE: Warm, artisanal, inviting. Soft lighting feel, handcrafted aesthetic. Daily specials prominent. Should feel like a neighborhood favorite you want to visit every morning."
-        : subType === "foodTruck"
-        ? "FOOD TRUCK ARCHETYPE: Bold, mobile, energetic. Big personality. Schedule and locations section. Social media prominent. Should feel fun and easy to find."
-        : "RESTAURANT ARCHETYPE: Dark, moody, editorial. Cinematic hero — full height, dramatic type, minimal words. Menu clean and typographic. About has owner pull quote. Atmosphere over information."
-      : p.businessType === "retail"
-      ? subType === "pharmacy"
-        ? "PHARMACY ARCHETYPE: Clean, trustworthy, professional. Health-focused. Community anchor feel. Services and hours very prominent. Should feel like a place you trust with your family's health."
-        : subType === "cornerStore"
-        ? "BODEGA ARCHETYPE: Bold, neighborhood, always open. Specials prominent. Community-rooted. Should feel like the heartbeat of the block."
-        : "RETAIL ARCHETYPE: Warm, inviting, neighborhood boutique. Hero has immediate energy and CTA. Bold product/specials cards. About section roots the business in the community."
-      : (() => {
-          const archetypes = {
-            autobody:    "AUTO BODY ARCHETYPE: Industrial confidence. Dark greys, bold accent color. Services and trust signals prominent. 'Get a Free Estimate' repeated. Should feel like a shop that does honest work.",
-            salon:       "HAIR SALON ARCHETYPE: Warm luxury. Rich colors, editorial feel. Gallery prominent. Booking CTA repeated. Should feel like a place where people leave looking and feeling their best.",
-            barbershop:  "BARBERSHOP ARCHETYPE: Classic cool. Bold type, strong contrast, community energy. Services clear. 'Walk in or book' dual CTA. Should feel like the spot everyone knows.",
-            nailsalon:   "NAIL SALON ARCHETYPE: Clean, feminine, inviting. Soft palette with a pop of color. Gallery prominent. Should feel like a little luxury accessible to everyone.",
-            cleaning:    "CLEANING ARCHETYPE: Fresh, trustworthy, organized. Sky blues or greens. 'Get a free quote' prominent. Should feel like they show up on time and leave things spotless.",
-            childcare:   "CHILDCARE ARCHETYPE: Warm, bright, reassuring. Parents need to feel safe leaving their child here. Programs clear. Tour CTA prominent. Should feel like a second home.",
-            tutoring:    "TUTORING ARCHETYPE: Focused, encouraging, professional. Bright and clean. Results emphasized. Assessment CTA prominent. Should feel like the place where grades actually improve.",
-            wellness:    "WELLNESS ARCHETYPE: Calm and healing. Soft neutrals, warm tones. Booking CTA prominent. Should feel like relief before you even walk in.",
-            laundromat:  "LAUNDROMAT ARCHETYPE: Clean, simple, honest. Services and hours crystal clear. Community-rooted. Should feel like the most reliable stop on the block.",
-            funeralhome: "FUNERAL HOME ARCHETYPE: Dignified, restrained, warm. Navy or deep burgundy. NO bold animations. NO energetic CTAs. Phone number always visible. Should feel like a place of comfort in hard times.",
-            catering:    "CATERING ARCHETYPE: Celebratory and professional. Rich colors. Sample menus prominent. Quote request CTA clear. Should feel like the caterer who makes every event memorable.",
-            photography: "PHOTOGRAPHY ARCHETYPE: Portfolio-first. Dramatic, editorial. Gallery fills the screen. Booking CTA prominent. Should feel like every photo tells a story.",
-            tailoring:   "TAILORING ARCHETYPE: Crafted, precise, old-world quality. Warm earth tones. Services and turnaround clear. Should feel like trusted hands that get it right.",
-            taxnotary:   "TAX/NOTARY ARCHETYPE: Trustworthy, clear, community-rooted. Professional but not cold. Services and languages spoken prominent. Should feel like help you can actually afford and trust.",
-            florist:     "FLORIST ARCHETYPE: Fresh, botanical, alive. Deep greens and natural textures. Gallery prominent. Same-day delivery and ordering prominent. Should feel like walking into a garden.",
-            church:      "CHURCH ARCHETYPE: Welcoming, warm, community-rooted. Service times front and center. Ministries highlighted. Should feel like an open door — everyone is invited.",
-            legal:       "LEGAL ARCHETYPE: Professional, trustworthy, community-rooted. Deep navy or dark tones. 'Free Consultation' repeated. Should feel like someone who actually fights for you.",
-          };
-          return archetypes[subType] || "SERVICE ARCHETYPE: Professional, trustworthy, community-rooted. Credibility established immediately. Services in clean cards. Booking or contact CTA repeated throughout.";
-        })();
-
-  // ── Subtype-aware content section ──────────────────────────────
-  const typeContent = (() => {
-    if (p.businessType === "restaurant") {
-      return `MENU SECTION (id="menu"): Elegant menu layout grouped by category. Category headers in display serif. 3-4 items per category. Name prominent, one-line description, price only if provided. ${subType === "catering" ? "Include a 'Request a Quote' CTA for event inquiries." : "Include ordering or reservation CTA at the bottom."}`;
-    }
-    if (p.businessType === "retail") {
-      return `SPECIALS SECTION (id="specials"): Large bold cards for deals and best-sellers. Price or savings prominent. At least one featured hero deal in a full-width card before the grid.`;
-    }
-    const serviceSection = {
-      autobody:    `SERVICES SECTION (id="services"): Service cards in a grid — Collision Repair, Paint & Body, Oil Changes, Tires, Detailing. Brief description per service. Insurance section if credentials mention preferred status. "Get a Free Estimate" CTA.`,
-      salon:       `SERVICES SECTION (id="services"): Service cards with pricing if provided — Braids, Locs, Color, Kids, Special Occasions. "Book Your Appointment" CTA. Link to booking platform if found in research.`,
-      barbershop:  `SERVICES SECTION (id="services"): Services — Fades, Lineups, Beard, Kids, Designs. Pricing if provided. "Walk In or Book" dual CTA.`,
-      nailsalon:   `SERVICES SECTION (id="services"): Service cards — Manicure, Pedicure, Acrylics, Gel, Nail Art. Pricing if provided. "Walk-ins Welcome" CTA.`,
-      cleaning:    `SERVICES SECTION (id="services"): Service cards — Residential, Deep Clean, Move-Out, Commercial, Airbnb. Pricing if provided. "Get a Free Quote" CTA.`,
-      childcare:   `PROGRAMS SECTION (id="services"): Program cards — Full-Day Care, After-School, Summer, Drop-In. Age ranges and hours prominent. "Schedule a Tour" CTA.`,
-      tutoring:    `SERVICES SECTION (id="services"): Subject/service cards with grade levels — Math, Reading, SAT Prep, Regents, etc. "Book a Free Assessment" CTA.`,
-      wellness:    `SERVICES SECTION (id="services"): Treatment cards with duration and pricing if provided. "Book Your Session" CTA. Link to booking platform if found in research.`,
-      laundromat:  `SERVICES SECTION (id="services"): Services — Self-Service, Wash & Fold, Dry Cleaning, Large Items. Pricing if provided. Hours prominent.`,
-      funeralhome: `SERVICES SECTION (id="services"): Services listed with dignity — Traditional Funeral, Cremation, Graveside, Memorial, Pre-Need Planning. Tone warm and restrained. Phone prominent. No aggressive CTAs.`,
-      catering:    `MENU SECTION (id="menu"): Sample menus or cuisine types. Event types served. "Request a Quote" form: event type, date, guest count, contact info.`,
-      photography: `PORTFOLIO SECTION (id="portfolio"): Gallery of work categories — Portraits, Weddings, Events, Commercial. Photos if uploaded. "Book a Session" CTA.`,
-      tailoring:   `SERVICES SECTION (id="services"): Services — Hems, Alterations, Repairs, Custom Tailoring, Wedding Dress. Turnaround time and pricing if provided.`,
-      taxnotary:   `SERVICES SECTION (id="services"): Services — Tax Prep, ITIN, Notary, Immigration Forms, Bookkeeping. Languages spoken if provided. "Walk-ins Welcome" or appointment CTA.`,
-      florist:     `ARRANGEMENTS SECTION (id="services"): Categories — Everyday, Weddings, Funerals, Events, Custom. Photos if uploaded. Phone or order CTA.`,
-      church:      `WORSHIP SECTION (id="services"): Service times and location prominent. What to expect as a first-time visitor. Ministries and programs listed. "Join Us This Sunday" CTA.`,
-      legal:       `SERVICES SECTION (id="services"): Practice areas — Immigration, Family Law, Personal Injury, Criminal Defense, etc. "Free Consultation" CTA throughout.`,
-    };
-    return serviceSection[subType] || `SERVICES SECTION (id="services"): Clean service cards with descriptions. Pricing if provided. Clear booking or contact CTA.`;
-  })();
-
-  // ── Contact section ────────────────────────────────────────────
-  const contactSection =
-    p.businessType === "restaurant"
-      ? `CONTACT/ORDER SECTION (id="contact"):
-      IMPORTANT: Do NOT include an HTML form with input fields. This is a restaurant.
-      Build an action-focused section with:
-      - Large phone number as a <a href="tel:${p.phone || ""}"> link — "Call to Order" label, big and prominent
-      - If research found real delivery platform URLs (DoorDash, UberEats, Grubhub, Seamless), display them as styled buttons with their real links. Never invent a delivery URL.
-      - If research found a real reservation link (OpenTable, Resy), add a "Reserve a Table" button with that real link. If not found, use the phone number for reservations.
-      - Hours displayed clearly
-      - Full address with a "Get Directions" link: <a href="https://maps.google.com/?q=${mapsUrl}" target="_blank">
-      - Catering inquiry form (name, email, message) ONLY if owner provided an email AND description mentions catering or events`
-      : p.businessType === "retail"
-      ? `CONTACT SECTION (id="contact"):
-      Focus on getting people in the door:
-      - Phone as <a href="tel:${p.phone || ""}"> — prominent, labeled "Give us a call"
-      - Address with "Get Directions" link: <a href="https://maps.google.com/?q=${mapsUrl}" target="_blank">
-      - Hours displayed clearly
-      - If research found e-commerce or ordering links, include them
-      - Simple contact form (name, message, send) ONLY if owner provided an email address`
-      : (() => {
-          const isAutoBody  = subType === "autobody";
-          const isLegal     = subType === "legal";
-          const isChildcare = subType === "childcare";
-          const isFuneral   = subType === "funeralhome";
-          const isCatering  = subType === "catering";
-          const isChurch    = subType === "church";
-          const isTutoring  = subType === "tutoring";
-
-          const primaryCTA = isFuneral
-            ? `- Prominent phone number available 24/7: <a href="tel:${p.phone || ""}">. Label: "We're here when you need us — available 24 hours"`
-            : isChurch
-            ? `- Service times displayed prominently. Address with "Get Directions" link. Phone number for pastoral inquiries.`
-            : isCatering
-            ? `- "Request a Quote" as the primary CTA — a simple form: event type, date, number of guests, contact info`
-            : isAutoBody
-            ? `- Large "Get a Free Estimate" button that links to tel:${p.phone || ""} — prominent and clear`
-            : isLegal
-            ? `- Large "Free Consultation" button that links to tel:${p.phone || ""}`
-            : isChildcare || isTutoring
-            ? `- Large "Schedule a Visit" or "Book a Free Assessment" button that links to tel:${p.phone || ""}`
-            : `- If research found real booking platform URLs (Vagaro, StyleSeat, Booksy, Calendly, etc), make "Book Now" the hero CTA button with that real URL. Otherwise use the phone as the primary CTA.`;
-
-          return `CONTACT/BOOKING SECTION (id="contact"):
-      ${primaryCTA}
-      - Phone as <a href="tel:${p.phone || ""}"> — prominent and clearly labeled
-      - Address with "Get Directions" link: <a href="https://maps.google.com/?q=${mapsUrl}" target="_blank"> — only if walk-ins are relevant
-      - Hours displayed clearly
-      - Contact form (name, email, message, send) with netlify attribute — labeled appropriately for the business type
-      - ${isAutoBody ? "Include insurance info section if credentials mention preferred shop status" : ""}`;
-        })();
-
-  // ── Research ───────────────────────────────────────────────────
-  const researchQuery = `"${p.businessName}" ${p.city} ${
-    p.businessType === "restaurant" ? `${subType} restaurant menu reviews`
-    : p.businessType === "retail"   ? `${subType} store hours reviews`
-    :                                  `${subType} ${p.industry || "business"} reviews`
-  }`;
-
-  console.log(`[${orderId}] Starting research (query: ${researchQuery})`);
-
+  // ── Research (fires immediately, parallel with pass 1) ─────────
+  console.log(`[${orderId}] Starting research`);
   const researchPromise = (async () => {
     try {
-      const researchRes = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": anthropicKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-beta": "web-search-2025-03-05",
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-5",
-          max_tokens: 4000,
-          // FIX 3: Stricter system prompt to eliminate preamble
-          system: "You are a business research tool. Output ONLY the structured data block below. Do not write any sentences before FOUND:. Do not summarize. Do not say 'Based on my research' or 'I searched for'. The very first characters of your response must be 'FOUND:'",
-          tools: [{ type: "web_search_20250305", name: "web_search" }],
-          messages: [{
-            role: "user",
-            content: `Search for "${p.businessName}" at ${p.address || ""} ${p.city || "New York"}. Your response must start with FOUND: — no preamble whatsoever.
+      const data = await callClaude({
+        model: "claude-sonnet-4-5",
+        max_tokens: 4000,
+        beta: "web-search-2025-03-05",
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
+        system: "You are a business research tool. The very first characters of your response must be 'FOUND:'. No preamble. No intro sentences. Start with FOUND: immediately.",
+        messages: [{
+          role: "user",
+          content: `Search for "${p.businessName}" at ${p.address || ""} ${p.city || "New York"}.
+Start your response with FOUND: — nothing before it.
 
 FOUND: yes/no/partial
 RATING: [e.g. "4.8 stars · 43 Google reviews" or "none found"]
@@ -310,453 +164,729 @@ HISTORY: [founding year or notable history or "none found"]
 HAS_WEBSITE: yes/no
 
 Only verified facts. Never invent anything.`,
-          }],
-        }),
+        }],
       });
-
-      if (!researchRes.ok) {
-        console.log(`[${orderId}] Research HTTP error: ${researchRes.status}`);
-        return "";
-      }
-
-      const data = await researchRes.json();
-      const rawText = data.content?.find(b => b.type === "text")?.text || "";
-
-      // FIX 3: Slice to FOUND: marker to strip any model preamble
-      const foundIdx = rawText.indexOf("FOUND:");
-      const text = foundIdx >= 0 ? rawText.slice(foundIdx) : rawText;
-
-      console.log(`[${orderId}] Research complete: ${text.slice(0, 150)}`);
-      return text;
+      const raw = data.content?.find(b => b.type === "text")?.text || "";
+      const idx = raw.indexOf("FOUND:");
+      return idx >= 0 ? raw.slice(idx) : raw;
     } catch (e) {
-      console.log(`[${orderId}] Research failed: ${e.message} — continuing without`);
+      console.log(`[${orderId}] Research failed: ${e.message}`);
       return "";
     }
   })();
 
-  const researchFindings = await researchPromise;
-  const noResearch = !researchFindings || researchFindings.includes("BUSINESS NOT FOUND ONLINE");
+  // ── Parse research into a structured object ────────────────────
+  function parseResearch(text) {
+    if (!text) return null;
+    const get = key => {
+      const m = text.match(new RegExp(`${key}:\\s*(.+?)(?=\\n[A-Z_]+:|$)`, "si"));
+      return m ? m[1].trim() : null;
+    };
+    const found = get("FOUND");
+    if (!found || found.toLowerCase().startsWith("no")) return null;
 
-  const testimonialsInstruction =
-    noResearch || !researchFindings.includes("REVIEWS:")
-      ? "TESTIMONIALS: No verified reviews were found for this business. Do NOT invent testimonials. Do NOT include a testimonials section."
-      : `TESTIMONIALS: Real customer reviews were found in the research data. Include a testimonials section between the about section and the contact section. Use ONLY the actual quotes found — verbatim, with attribution (first name + platform, e.g. "Maria G. — Google"). Style as large elegant pull quotes, not small cards. If fewer than 2 real quotes were found, skip this section.`;
+    const reviewsRaw = get("REVIEWS");
+    const reviews    = [];
+    if (reviewsRaw && !reviewsRaw.toLowerCase().includes("none")) {
+      for (const m of reviewsRaw.matchAll(/"([^"]+)"\s*[—–-]\s*([^\n,]+)/g)) {
+        reviews.push({ quote: m[1].trim(), attribution: m[2].trim() });
+      }
+    }
 
-  // ── System prompt ──────────────────────────────────────────────
-  const systemPrompt = `You are a senior web designer at a boutique agency that builds bespoke websites for local small businesses. Your work is award-winning, distinctive, and makes business owners proud to share it.
+    const rating        = get("RATING");
+    const orderingLinks = get("ORDERING_LINKS");
+    const bookingLinks  = get("BOOKING_LINKS");
+    const press         = get("PRESS");
+    const social        = get("SOCIAL");
+    const history       = get("HISTORY");
 
-ABSOLUTE RULES — these override everything else:
-- Output raw HTML only. Start with <!DOCTYPE html>. No markdown, no code fences, no explanation.
-- Never invent data. If a phone number, price, review, rating, URL, or hour was not provided or found in research, do not include it.
-- Zero emoji anywhere. Use SVG icons or CSS elements only.
-- Every site must be fully self-contained — all CSS and JS inline, zero external JS libraries.
-- Never close the HTML prematurely. If running low on tokens, shorten copy — never skip sections or SEO tags. The very last characters must be </html>.
+    return {
+      rating:        (rating        && !rating.toLowerCase().includes("none"))        ? rating        : null,
+      reviews:       reviews.length >= 2 ? reviews : [],   // only surface if 2+ real quotes
+      orderingLinks: (orderingLinks && orderingLinks !== "n/a")                       ? orderingLinks : null,
+      bookingLinks:  (bookingLinks  && bookingLinks  !== "n/a")                       ? bookingLinks  : null,
+      press:         (press         && !press.toLowerCase().includes("none"))         ? press         : null,
+      social:        (social        && !social.toLowerCase().includes("none"))        ? social        : null,
+      history:       (history       && !history.toLowerCase().includes("none"))       ? history       : null,
+      raw: text,
+    };
+  }
 
-TECHNICAL STANDARDS (every generation):
-- Mobile-first. Perfect at 375px portrait. Grid/flex adapts to 768px+ desktop.
-- Fonts from: https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,700&family=DM+Sans:wght@300;400;500;600&family=Fraunces:ital,wght@0,400;0,700;1,400&family=Lora:ital,wght@0,400;0,600;1,400&display=swap
-- html { scroll-behavior: smooth; }
-- Two fonts max. 900 weight for display, 300-400 for body.
-- 2 brand colors + 2 neutrals. Chosen deliberately. No generic blues or grays.
-- Generous spacing. Every section visually distinct. Quality bar: $3,000–5,000 agency site.
+  // ── Archetype helpers ──────────────────────────────────────────
+  const typeLayout =
+    p.businessType === "restaurant"
+      ? subType === "bakery"     ? "BAKERY/CAFÉ: Warm, artisanal. Daily specials prominent. Neighborhood favorite."
+        : subType === "foodTruck" ? "FOOD TRUCK: Bold, energetic. Schedule/locations section. Social prominent."
+        :                           "RESTAURANT: Dark, moody, editorial. Cinematic hero. Menu typographic. Owner pull quote."
+      : p.businessType === "retail"
+      ? subType === "pharmacy"     ? "PHARMACY: Clean, trustworthy. Hours very prominent. Community anchor."
+        : subType === "cornerStore" ? "BODEGA: Bold, neighborhood, always open. Specials prominent."
+        :                             "RETAIL: Warm boutique. Bold specials cards. Community-rooted about."
+      : ({
+          autobody:    "AUTO BODY: Industrial confidence. Dark greys, bold accent. 'Get a Free Estimate' repeated.",
+          salon:       "HAIR SALON: Warm luxury, editorial. Gallery prominent. Booking CTA repeated.",
+          barbershop:  "BARBERSHOP: Classic cool, bold type, community energy. 'Walk in or book' dual CTA.",
+          nailsalon:   "NAIL SALON: Clean, feminine, inviting. Soft palette + pop of color. Gallery prominent.",
+          cleaning:    "CLEANING: Fresh, trustworthy. Sky blues/greens. 'Get a free quote' prominent.",
+          childcare:   "CHILDCARE: Warm, bright, reassuring. Programs clear. 'Schedule a Tour' CTA.",
+          tutoring:    "TUTORING: Focused, encouraging. Results emphasized. 'Book a Free Assessment' CTA.",
+          wellness:    "WELLNESS: Calm, healing. Soft neutrals. Booking CTA prominent.",
+          laundromat:  "LAUNDROMAT: Clean, simple, honest. Hours crystal clear. Community-rooted.",
+          funeralhome: "FUNERAL HOME: Dignified, restrained, warm. NO bold animations. Phone always visible.",
+          catering:    "CATERING: Celebratory, professional. Sample menus. Quote request CTA.",
+          photography: "PHOTOGRAPHY: Portfolio-first, editorial. Gallery fills screen. Booking CTA.",
+          tailoring:   "TAILORING: Crafted, old-world quality. Warm earth tones. Turnaround clear.",
+          taxnotary:   "TAX/NOTARY: Trustworthy, community-rooted. Languages spoken prominent.",
+          florist:     "FLORIST: Fresh, botanical. Deep greens. Same-day delivery/ordering prominent.",
+          church:      "CHURCH: Welcoming, warm. Service times front and center. Open-door feel.",
+          legal:       "LEGAL: Professional, trustworthy. Deep navy. 'Free Consultation' repeated.",
+        }[subType] || "SERVICE: Professional, trustworthy, community-rooted. Services in clean cards.");
 
-SEO (every generation, no exceptions):
-- <title>: "[Business Name] — [Industry] in [City]"
-- <meta name="description">: 150–160 chars, business name + what they do + city + differentiator
-- JSON-LD schema in <head>: specific @type (Restaurant, HairSalon, AutoRepair, etc), name, address, telephone, openingHours
-- <h1> includes the city naturally
-- City name appears 3–4 times throughout
-- Every <img> has a descriptive alt tag with business name and city
+  const typeContent = (() => {
+    if (p.businessType === "restaurant") return `MENU SECTION (id="menu"): Grouped by category, display serif headers, 3-4 items each. Price only if provided. ${subType === "catering" ? "'Request a Quote' CTA." : "Ordering or reservation CTA at bottom."}`;
+    if (p.businessType === "retail")     return `SPECIALS SECTION (id="specials"): Bold deal cards. Price/savings prominent. One full-width hero deal before the grid.`;
+    return ({
+      autobody:    `SERVICES (id="services"): Collision Repair, Paint & Body, Oil Changes, Tires, Detailing. "Get a Free Estimate" CTA.`,
+      salon:       `SERVICES (id="services"): Braids, Locs, Color, Kids, Special Occasions. Pricing if provided. Booking CTA.`,
+      barbershop:  `SERVICES (id="services"): Fades, Lineups, Beard, Kids, Designs. Pricing if provided. "Walk In or Book" CTA.`,
+      nailsalon:   `SERVICES (id="services"): Manicure, Pedicure, Acrylics, Gel, Nail Art. Pricing if provided. Walk-ins welcome.`,
+      cleaning:    `SERVICES (id="services"): Residential, Deep Clean, Move-Out, Commercial, Airbnb. "Get a Free Quote" CTA.`,
+      childcare:   `PROGRAMS (id="services"): Full-Day Care, After-School, Summer, Drop-In. Age ranges + hours. "Schedule a Tour" CTA.`,
+      tutoring:    `SERVICES (id="services"): Math, Reading, SAT Prep, Regents, etc. "Book a Free Assessment" CTA.`,
+      wellness:    `SERVICES (id="services"): Treatment cards with duration + pricing if provided. "Book Your Session" CTA.`,
+      laundromat:  `SERVICES (id="services"): Self-Service, Wash & Fold, Dry Cleaning, Large Items. Pricing + hours prominent.`,
+      funeralhome: `SERVICES (id="services"): Traditional Funeral, Cremation, Graveside, Memorial, Pre-Need. Warm, restrained tone.`,
+      catering:    `MENU (id="menu"): Sample menus/cuisine types. Event types served. Quote request form.`,
+      photography: `PORTFOLIO (id="portfolio"): Portraits, Weddings, Events, Commercial. "Book a Session" CTA.`,
+      tailoring:   `SERVICES (id="services"): Hems, Alterations, Repairs, Custom, Wedding Dress. Turnaround + pricing if provided.`,
+      taxnotary:   `SERVICES (id="services"): Tax Prep, ITIN, Notary, Immigration Forms, Bookkeeping. Languages if provided.`,
+      florist:     `ARRANGEMENTS (id="services"): Everyday, Weddings, Funerals, Events, Custom. Phone or order CTA.`,
+      church:      `WORSHIP (id="services"): Service times, first-time visitor info, ministries. "Join Us" CTA.`,
+      legal:       `SERVICES (id="services"): Practice areas. "Free Consultation" CTA throughout.`,
+    }[subType] || `SERVICES (id="services"): Clean cards with descriptions. Pricing if provided. Booking or contact CTA.`);
+  })();
 
-ANIMATIONS (every generation):
-- class="fade-up" on every major section (minimum 6). IntersectionObserver adds "visible". CSS: .fade-up{opacity:0;transform:translateY(24px);transition:opacity .6s ease,transform .6s ease} .fade-up.visible{opacity:1;transform:none}
-- Hero text: headline 0s delay, tagline 0.15s, CTA 0.3s
-- Nav: transparent on hero, gains background + box-shadow at scrollY > 50
-- All buttons/cards: hover with scale or shadow, 0.2s ease
-- Stats/numbers: count-up animation on scroll
+  const contactSection = p.businessType === "restaurant"
+    ? `CONTACT/ORDER (id="contact"): NO HTML input form. Large tel: link labeled "Call to Order". Real delivery/reservation platform buttons only if found in research. Hours. Address + "Get Directions" → https://maps.google.com/?q=${mapsUrl}. Catering form only if email provided AND catering mentioned.`
+    : p.businessType === "retail"
+    ? `CONTACT (id="contact"): Phone tel: link "Give us a call". Address + "Get Directions" → https://maps.google.com/?q=${mapsUrl}. Hours. Contact form only if email provided.`
+    : (() => {
+        const cta =
+          subType === "funeralhome" ? `24/7 tel: link labeled "We're here when you need us"`
+          : subType === "church"    ? "Service times + address + phone for pastoral inquiries"
+          : subType === "catering"  ? "Quote request form: event type, date, guest count, contact"
+          : subType === "autobody"  ? `"Get a Free Estimate" button → tel:${p.phone || ""}`
+          : subType === "legal"     ? `"Free Consultation" button → tel:${p.phone || ""}`
+          : (subType === "childcare" || subType === "tutoring") ? `"Schedule a Visit / Book Assessment" → tel:${p.phone || ""}`
+          : "Book Now → real booking URL from research if found, else phone";
+        return `CONTACT/BOOKING (id="contact"): ${cta}. Phone tel: link. Address + "Get Directions" → https://maps.google.com/?q=${mapsUrl} if walk-ins relevant. Hours. Contact form (name, email, message). ${subType === "autobody" ? "Insurance info if preferred shop." : ""}`;
+      })();
 
-LOGO & BRANDING:
-- If a LOGO URL is provided and ends in .svg: use it as an <img> tag in nav (height: 50-60px) and footer (height: 70px).
-- If a LOGO URL is provided but is NOT an SVG (jpg/png/webp): display it in the nav and footer but also note that raster logos may appear blurry at small sizes. Use it anyway.
-- Build the entire site color palette around the logo colors. The site must feel like it belongs to the same brand.
-- If no logo is provided, use the business name as a styled text wordmark in the nav.
+  // ════════════════════════════════════════════════════════════════
+  // PASS 1 — Design System (Sonnet, ~3000 tokens)
+  // Fires in parallel with research. Produces a <style> block with
+  // CSS custom properties, typography, all component classes.
+  // Pass 2 will inject this verbatim and only write HTML.
+  // ════════════════════════════════════════════════════════════════
+  console.log(`[${orderId}] Pass 1: design system (parallel with research)`);
 
-ICONS — CRITICAL. Every service card icon must be semantically correct. Use these SVG path descriptions as guidance:
+  const pass1Promise = callClaude({
+    model: "claude-sonnet-4-5",
+    max_tokens: 3500,
+    system: `You are a senior brand designer. Output ONLY a <style> block — raw CSS, no markdown, no explanation.
+Start with <style> and end with </style>. Nothing else.
+Design for local small businesses. Quality bar: boutique agency, $3-5k site.
+Mobile-first. All sizing in rem/em/%. Borders and shadows may use px.`,
+    messages: [{
+      role: "user",
+      content: `Design a complete CSS design system for:
 
-AUTO BODY/COLLISION → car silhouette with crumple damage or wrench overlay
-TOWING → tow truck with hook and chain
-WINDOW TINTING → car window shape with diagonal gradient lines across it
-PAINT/BODY WORK → spray paint gun or paint drip on car panel, NOT a pen nib
-DRIVE-IN CLAIM → clipboard with checkmark or car entering a building
+Name: ${p.businessName}
+Type: ${typeLabel} · ${subType}
+Vibe: "${p.vibe || "Warm, welcoming, community-first"}"
+${colorInstruction}
+${logoUrl ? `Logo: ${logoUrl.endsWith(".svg") ? "SVG" : "raster PNG/JPG"}` : "No logo — text wordmark"}
 
-HAIR SALON → scissors (open, diagonal), or comb with curved handle
-BARBERSHOP → straight razor or clippers, or the classic barber pole
-NAIL SALON → nail polish bottle, or hand with painted nails
-BRAIDING/LOCS → interlocking curved lines suggesting a braid pattern
+Output a <style> block with these /* SECTION */ comment dividers:
 
-CLEANING SERVICE → spray bottle, or mop and bucket
-LAUNDROMAT → washing machine front-view with circular drum window
-TAILORING → needle and thread, or thimble, or dress form silhouette
+/* FONTS */
+Google Fonts @import for exactly 2 font families (choose from: Playfair Display, DM Sans, Fraunces, Lora).
 
-CHILDCARE/DAYCARE → two small figures (child) or abc blocks or a simple house with heart
-TUTORING → open book, or pencil with graduation cap, or chalkboard
+/* TOKENS */
+:root {
+  --brand: [primary brand color];
+  --brand-dark: [darkened 25%];
+  --brand-light: [lightened 25%];
+  --bg-primary: [page background];
+  --bg-secondary: [alternate section bg];
+  --bg-card: [card/panel bg];
+  --text-primary: [main text];
+  --text-secondary: [muted text];
+  --text-on-brand: [text on brand-colored bg, usually white];
+  --border: [subtle border];
+  --shadow-sm: [small box-shadow];
+  --shadow-md: [medium box-shadow];
+  --radius: [default border-radius 4-12px];
+  --radius-lg: [large border-radius];
+  --font-display: [display font name];
+  --font-body: [body font name];
+  --space-xs:.25rem; --space-sm:.5rem; --space-md:1rem; --space-lg:1.5rem; --space-xl:2.5rem; --space-2xl:4rem;
+  --section-pad: 5rem 1.25rem;
+  --container: 1200px;
+}
 
-WELLNESS/MASSAGE → hands in massage position, or lotus flower outline
-FITNESS/GYM → dumbbell
-ACUPUNCTURE → simple needle lines radiating from a point
+/* RESET */
+*, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+html { scroll-behavior:smooth; }
+body { font-family:var(--font-body),sans-serif; color:var(--text-primary); background:var(--bg-primary); line-height:1.6; }
+img { max-width:100%; display:block; }
+a { color:inherit; text-decoration:none; }
 
-RESTAURANT/FOOD → fork and knife crossed, or plate with dome cover
-BAKERY → layered cake or croissant outline
-FOOD TRUCK → food truck side-view silhouette
-CATERING → covered serving dish / cloche
+/* TYPOGRAPHY */
+h1,h2,h3,h4 { font-family:var(--font-display),serif; line-height:1.15; }
+h1 { font-size:clamp(2.5rem,6vw,5rem); font-weight:900; letter-spacing:-.02em; }
+h2 { font-size:clamp(1.8rem,4vw,3rem); font-weight:700; }
+h3 { font-size:clamp(1.2rem,2.5vw,1.75rem); font-weight:700; }
+.eyebrow { font-family:var(--font-body),sans-serif; font-size:.8rem; font-weight:600; letter-spacing:.15em; text-transform:uppercase; color:var(--brand); display:block; margin-bottom:.5rem; }
+.display-xl { font-size:clamp(3rem,8vw,6.5rem); font-weight:900; letter-spacing:-.03em; line-height:1; }
+.lead { font-size:clamp(1.05rem,2vw,1.25rem); line-height:1.7; color:var(--text-secondary); }
 
-FLORIST → single stem flower with leaves
-FUNERAL HOME → simple lily or dove in flight — dignified, never a skull or coffin
-CHURCH/WORSHIP → simple arch doorway or cross (tasteful, not heavy)
+/* NAV */
+nav { position:fixed; top:0; left:0; right:0; z-index:100; padding:.875rem 1.25rem; transition:background .3s,box-shadow .3s; }
+nav.scrolled { background:var(--bg-primary); box-shadow:0 2px 20px rgba(0,0,0,.08); }
+.nav-inner { max-width:var(--container); margin:auto; display:flex; align-items:center; justify-content:space-between; }
+.nav-logo { font-family:var(--font-display),serif; font-weight:800; font-size:1.25rem; color:var(--brand); }
+.nav-links { display:flex; gap:2rem; align-items:center; }
+.nav-link { font-size:.9rem; font-weight:500; color:var(--text-primary); transition:color .2s; }
+.nav-link:hover { color:var(--brand); }
+.nav-cta { background:var(--brand); color:var(--text-on-brand); padding:.5rem 1.25rem; border-radius:999px; font-size:.875rem; font-weight:600; transition:background .2s,transform .2s; }
+.nav-cta:hover { background:var(--brand-dark); transform:scale(1.03); }
+.hamburger { display:none; flex-direction:column; gap:5px; cursor:pointer; background:none; border:none; padding:.25rem; }
+.hamburger span { display:block; width:24px; height:2px; background:var(--text-primary); border-radius:2px; transition:transform .3s,opacity .3s; }
+.mobile-menu { display:none; position:fixed; inset:0; background:var(--bg-primary); z-index:99; flex-direction:column; align-items:center; justify-content:center; gap:2rem; }
+.mobile-menu.open { display:flex; }
+.mobile-menu a { font-family:var(--font-display),serif; font-size:2rem; font-weight:700; color:var(--text-primary); }
+.mobile-menu a:hover { color:var(--brand); }
 
-PHOTOGRAPHY → camera body with lens circle
-VIDEOGRAPHY → film slate / clapperboard
+/* BUTTONS */
+.btn-primary { display:inline-flex; align-items:center; gap:.5rem; background:var(--brand); color:var(--text-on-brand); padding:.875rem 2rem; border-radius:var(--radius); font-weight:600; font-size:1rem; border:2px solid var(--brand); cursor:pointer; transition:background .2s,transform .2s,box-shadow .2s; }
+.btn-primary:hover { background:var(--brand-dark); border-color:var(--brand-dark); transform:scale(1.02); box-shadow:var(--shadow-md); }
+.btn-secondary { display:inline-flex; align-items:center; gap:.5rem; background:transparent; color:var(--brand); padding:.875rem 2rem; border-radius:var(--radius); font-weight:600; font-size:1rem; border:2px solid var(--brand); cursor:pointer; transition:background .2s,color .2s,transform .2s; }
+.btn-secondary:hover { background:var(--brand); color:var(--text-on-brand); transform:scale(1.02); }
+.btn-ghost { background:none; border:none; color:var(--text-on-brand); font-weight:500; cursor:pointer; text-decoration:underline; opacity:.8; transition:opacity .2s; }
+.btn-ghost:hover { opacity:1; }
 
-PHARMACY/DRUG STORE → mortar and pestle, or Rx symbol
-CORNER STORE/BODEGA → storefront awning with door
-GROCERY → shopping basket or fresh produce (apple + leaf)
-BEAUTY SUPPLY → lipstick tube or hand mirror
+/* HERO */
+.hero { position:relative; min-height:100svh; display:flex; align-items:center; overflow:hidden; }
+.hero-bg { position:absolute; inset:0; background-size:cover; background-position:center; }
+.hero-overlay { position:absolute; inset:0; background:linear-gradient(135deg,rgba(0,0,0,.72) 0%,rgba(0,0,0,.4) 100%); }
+.hero-content { position:relative; z-index:1; max-width:var(--container); margin:auto; padding:6rem 1.25rem 4rem; }
+.hero h1,.hero .display-xl { color:#fff; }
+.hero .tagline { color:rgba(255,255,255,.85); margin:1rem 0 2rem; }
+.hero-ctas { display:flex; gap:1rem; flex-wrap:wrap; }
+.rating-badge { display:inline-flex; align-items:center; gap:.4rem; background:var(--brand); color:var(--text-on-brand); padding:.3rem .9rem; border-radius:999px; font-weight:700; font-size:.875rem; margin-top:1rem; }
+.rating-badge .star { color:#fff; }
 
-LAW OFFICE → scales of justice, or gavel
-TAX/NOTARY → document with seal stamp, or calculator
-IMMIGRATION → passport with globe
+/* PROOF BAR */
+.proof-bar { background:var(--bg-secondary); padding:1.25rem var(--space-md); border-bottom:1px solid var(--border); }
+.proof-bar-inner { max-width:var(--container); margin:auto; display:flex; gap:2.5rem; align-items:center; flex-wrap:wrap; justify-content:center; }
+.proof-item { display:flex; align-items:center; gap:.5rem; font-size:.9rem; color:var(--text-secondary); }
+.proof-number { font-size:1.4rem; font-weight:800; color:var(--brand); line-height:1; }
 
-GENERAL RULE: If a service has a universal recognized symbol (scissors, gavel, camera), use it. Draw it cleanly in SVG — 3-8 path elements max. Never use a generic icon (circles, triangles, generic shapes) that doesn't communicate the service. A wrong icon erodes trust instantly.
-1. <nav> — Fixed. Transparent on hero, solid on scroll. Logo/name left, links right, hamburger mobile. Closes on link click.
-2. <section id="home"> — Hero. Full 100svh. Vibe-matched background. Bold display type. Staggered animation. One strong CTA.
-3. [CONTENT SECTION — see brief]
-4. <section id="about"> — Story. Human. Community connection explicit. Pull quote if origin story provided.
-5. [TESTIMONIALS — only if verified reviews found]
-6. [CONTACT SECTION — see brief]
-7. <footer> — Name, tagline, nav links, phone, address, city. Warm closing line. Copyright.`;
+/* LAYOUT HELPERS */
+.container { max-width:var(--container); margin:auto; padding:0 1.25rem; }
+section { padding:var(--section-pad); }
+.section-alt { background:var(--bg-secondary); }
+.section-dark { background:#0f0e0c; color:#fff; }
+.section-dark .lead,.section-dark .eyebrow { color:rgba(255,255,255,.7); }
+.section-header { margin-bottom:3rem; }
+.grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:2rem; align-items:center; }
+.grid-3 { display:grid; grid-template-columns:repeat(3,1fr); gap:1.5rem; }
+.grid-auto { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:1.5rem; }
 
-  // ── FIX 2: Tighter color instruction in user prompt ────────────
-  const colorInstruction = brandColor
-    ? `PRIMARY BRAND COLOR (extracted from logo pixel data — use this exactly): ${brandColor}
-COLOR RULES — non-negotiable:
-- Use ${brandColor} as the primary accent color: all buttons, active states, highlights, borders, underlines
-- Do NOT introduce any hue that is not derivable from ${brandColor} and warm/neutral tones
-- Background: deep warm neutral or near-black that makes ${brandColor} pop
-- Text: white or off-white on dark backgrounds; dark neutral on light sections
-- A complementary secondary accent may be used sparingly — derive it by lightening ${brandColor} by 20% or darkening it by 30%, not by inventing a new hue
-- If ${brandColor} is orange (hex r high, g medium, b low), do not render it as yellow or pink`
-    : `COLOR RULES: Build a deliberate palette from scratch that matches the vibe. Two brand colors + two neutrals. No generic blues.`;
+/* CARDS */
+.card { background:var(--bg-card); border-radius:var(--radius-lg); box-shadow:var(--shadow-sm); overflow:hidden; transition:box-shadow .25s,transform .25s; }
+.card:hover { box-shadow:var(--shadow-md); transform:translateY(-3px); }
+.card-body { padding:1.5rem; }
+.service-icon { width:56px; height:56px; border-radius:var(--radius); background:color-mix(in srgb,var(--brand) 12%,transparent); display:flex; align-items:center; justify-content:center; margin-bottom:1rem; }
+.service-icon svg { width:28px; height:28px; stroke:var(--brand); fill:none; stroke-width:1.75; stroke-linecap:round; stroke-linejoin:round; }
 
-  const userPrompt = `BUSINESS BRIEF:
+/* TESTIMONIALS */
+.testimonials { padding:var(--section-pad); background:var(--bg-secondary); }
+.testimonial-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:2rem; margin-top:2.5rem; }
+.testimonial-card { background:var(--bg-card); border-radius:var(--radius-lg); box-shadow:var(--shadow-sm); padding:2rem; }
+.quote-mark { font-size:4rem; line-height:0; display:block; margin-bottom:.75rem; color:var(--brand); font-family:var(--font-display),serif; }
+.testimonial-text { font-style:italic; line-height:1.75; color:var(--text-primary); font-size:1.05rem; }
+.testimonial-author { margin-top:1.25rem; font-weight:600; font-size:.875rem; color:var(--text-secondary); }
 
+/* ABOUT */
+.pull-quote { font-size:1.3rem; font-style:italic; line-height:1.6; border-left:4px solid var(--brand); padding-left:1.5rem; margin:2rem 0; color:var(--text-primary); }
+.press-mention { display:inline-flex; align-items:center; gap:.5rem; font-size:.875rem; font-weight:600; color:var(--text-secondary); margin-top:1rem; }
+
+/* GALLERY */
+.gallery-grid { display:grid; grid-template-columns:2fr 1fr 1fr; gap:.75rem; }
+.gallery-item { overflow:hidden; border-radius:var(--radius); }
+.gallery-item:first-child { grid-row:span 2; }
+.gallery-img { width:100%; height:100%; object-fit:cover; transition:transform .4s; }
+.gallery-item:hover .gallery-img { transform:scale(1.04); }
+
+/* CONTACT */
+.contact-grid { display:grid; grid-template-columns:1fr 1.2fr; gap:3rem; align-items:start; }
+.contact-info-item { display:flex; gap:1rem; margin-bottom:1.75rem; align-items:flex-start; }
+.contact-icon { width:44px; height:44px; min-width:44px; border-radius:50%; background:color-mix(in srgb,var(--brand) 12%,transparent); display:flex; align-items:center; justify-content:center; }
+.contact-icon svg { width:20px; height:20px; stroke:var(--brand); fill:none; stroke-width:1.75; stroke-linecap:round; }
+.contact-form { background:var(--bg-card); border-radius:var(--radius-lg); box-shadow:var(--shadow-sm); padding:2rem; }
+.form-group { margin-bottom:1.25rem; }
+.form-group label { display:block; font-size:.875rem; font-weight:600; margin-bottom:.4rem; color:var(--text-secondary); }
+input,textarea,select { width:100%; padding:.75rem 1rem; border:1.5px solid var(--border); border-radius:var(--radius); background:var(--bg-primary); color:var(--text-primary); font-family:var(--font-body),sans-serif; font-size:1rem; transition:border-color .2s; }
+input:focus,textarea:focus,select:focus { outline:none; border-color:var(--brand); }
+textarea { resize:vertical; min-height:120px; }
+.form-submit { width:100%; margin-top:.5rem; }
+.hours-grid { display:grid; grid-template-columns:auto 1fr; gap:.5rem 1.5rem; font-size:.9rem; }
+.hours-grid .day { font-weight:600; }
+.map-link { display:inline-flex; align-items:center; gap:.4rem; color:var(--brand); font-weight:500; }
+.map-link:hover { text-decoration:underline; }
+.platform-btn { display:inline-flex; align-items:center; gap:.5rem; padding:.6rem 1.25rem; border:2px solid var(--border); border-radius:999px; font-weight:600; font-size:.875rem; transition:border-color .2s,background .2s; margin:.25rem; }
+.platform-btn:hover { border-color:var(--brand); background:color-mix(in srgb,var(--brand) 8%,transparent); }
+
+/* FOOTER */
+footer { background:var(--bg-primary); border-top:1px solid var(--border); padding:4rem 1.25rem 2rem; }
+.footer-inner { max-width:var(--container); margin:auto; display:grid; grid-template-columns:2fr 1fr 1fr; gap:3rem; margin-bottom:2.5rem; }
+.footer-brand .nav-logo { font-size:1.5rem; margin-bottom:.75rem; }
+.footer-tagline { font-style:italic; color:var(--text-secondary); font-size:.9rem; margin-bottom:1rem; }
+.footer-links h4 { font-size:.8rem; font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:var(--text-secondary); margin-bottom:1rem; }
+.footer-links a { display:block; color:var(--text-secondary); font-size:.9rem; margin-bottom:.5rem; transition:color .2s; }
+.footer-links a:hover { color:var(--brand); }
+.footer-bottom { max-width:var(--container); margin:auto; border-top:1px solid var(--border); padding-top:1.5rem; display:flex; justify-content:space-between; align-items:center; color:var(--text-secondary); font-size:.8rem; flex-wrap:wrap; gap:.5rem; }
+
+/* ANIMATIONS */
+.fade-up { opacity:0; transform:translateY(24px); transition:opacity .6s ease,transform .6s ease; }
+.fade-up.visible { opacity:1; transform:none; }
+.stagger-1 { transition-delay:.1s; } .stagger-2 { transition-delay:.2s; } .stagger-3 { transition-delay:.3s; } .stagger-4 { transition-delay:.4s; }
+@media (prefers-reduced-motion:reduce) { .fade-up { opacity:1; transform:none; } }
+
+/* RESPONSIVE */
+@media (max-width:768px) {
+  .nav-links { display:none; }
+  .hamburger { display:flex; }
+  .grid-2,.grid-3,.contact-grid { grid-template-columns:1fr; }
+  .gallery-grid { grid-template-columns:1fr 1fr; }
+  .gallery-item:first-child { grid-column:span 2; grid-row:span 1; }
+  .footer-inner { grid-template-columns:1fr; gap:2rem; }
+  .hero-ctas { flex-direction:column; }
+  .proof-bar-inner { gap:1.5rem; justify-content:flex-start; }
+}`,
+    }],
+  });
+
+  // ── Await research + pass 1 in parallel ───────────────────────
+  const [researchRaw, pass1Data] = await Promise.all([researchPromise, pass1Promise]);
+
+  const researchFindings = researchRaw;
+  const research         = parseResearch(researchFindings);
+  const noResearch       = !research;
+
+  console.log(`[${orderId}] Research: ${research ? "found" : "not found"} | Reviews: ${research?.reviews?.length || 0} | Rating: ${research?.rating || "none"} | Press: ${research?.press || "none"}`);
+
+  // Extract design system CSS
+  let designSystem = (pass1Data.content?.find(b => b.type === "text")?.text || "")
+    .replace(/^```(?:css|html)?\n?/im, "").replace(/\n?```$/m, "").trim();
+  if (!designSystem.startsWith("<style>")) designSystem = `<style>\n${designSystem}`;
+  if (!designSystem.endsWith("</style>")) designSystem = `${designSystem}\n</style>`;
+
+  console.log(`[${orderId}] Pass 1 done. Design system: ${designSystem.length} chars`);
+
+  // ════════════════════════════════════════════════════════════════
+  // Build research display block for Pass 2
+  // Explicit HTML examples so research DEFINITELY shows on site.
+  // ════════════════════════════════════════════════════════════════
+  const researchBlock = (() => {
+    if (!research) {
+      return `RESEARCH: Business not found online — this is their internet debut.
+- Do NOT invent ratings, reviews, or platform links.
+- Do NOT include a testimonials section.
+- Do NOT include a social proof bar.`;
+    }
+
+    const lines = [`RESEARCH FOUND — you MUST surface all of the following on the site. This is real verified data:`];
+
+    if (research.rating) {
+      lines.push(`
+RATING: ${research.rating}
+Display this in TWO places:
+1. Hero section, directly below the tagline:
+   <div class="rating-badge"><span class="star">★</span> ${research.rating}</div>
+2. Proof bar (.proof-bar) immediately after the hero section:
+   <div class="proof-bar"><div class="proof-bar-inner"><div class="proof-item"><span class="proof-number">★ ${research.rating}</span><span>on Google</span></div></div></div>`);
+    }
+
+    if (research.reviews.length >= 2) {
+      lines.push(`
+TESTIMONIALS SECTION — REQUIRED. Include <section id="testimonials" class="testimonials fade-up"> between the about section and the contact section.
+Use ONLY these exact quotes, verbatim, with exact attribution:
+${research.reviews.map((r, i) => `  Quote ${i + 1}: "${r.quote}" — ${r.attribution}`).join("\n")}
+
+Required HTML structure:
+<section id="testimonials" class="testimonials fade-up">
+  <div class="container">
+    <p class="eyebrow">What People Say</p>
+    <h2>Real Reviews</h2>
+    <div class="testimonial-grid">
+      ${research.reviews.map(r => `<div class="testimonial-card">
+        <span class="quote-mark">"</span>
+        <p class="testimonial-text">${r.quote}</p>
+        <p class="testimonial-author">— ${r.attribution}</p>
+      </div>`).join("\n      ")}
+    </div>
+  </div>
+</section>`);
+    } else {
+      lines.push(`TESTIMONIALS: Fewer than 2 verified quotes — do NOT include a testimonials section. Do NOT invent quotes.`);
+    }
+
+    if (research.press) {
+      lines.push(`
+PRESS/AWARDS: "${research.press}"
+Mention in the about section as a credibility signal:
+<p class="press-mention">✦ Featured: ${research.press}</p>`);
+    }
+
+    if (research.social) {
+      lines.push(`
+SOCIAL: ${research.social}
+Show in footer + contact:
+<a href="https://instagram.com/${p.instagram?.replace("@","") || ""}" class="social-link">${research.social}</a>`);
+    }
+
+    if (research.history) {
+      lines.push(`HISTORY: "${research.history}" — weave naturally into the about section copy.`);
+    }
+
+    if (research.orderingLinks) {
+      lines.push(`ORDERING LINKS: ${research.orderingLinks}
+Add as .platform-btn buttons in the contact/order section. Use exact URLs from research.`);
+    }
+
+    if (research.bookingLinks) {
+      lines.push(`BOOKING LINKS: ${research.bookingLinks}
+Make the primary CTA button in the contact/booking section link to this URL.`);
+    }
+
+    return lines.join("\n");
+  })();
+
+  // ════════════════════════════════════════════════════════════════
+  // PASS 2 — HTML Generation (Opus, ~12000 tokens)
+  // Design decisions are LOCKED by the injected design system.
+  // This pass only writes semantic HTML using the CSS classes above.
+  // ════════════════════════════════════════════════════════════════
+  const pass2System = `You are a senior front-end developer. The design system (CSS) is already written and injected — use its classes exactly as defined.
+Your only job: write semantic, accessible HTML that correctly uses those classes.
+
+ABSOLUTE RULES:
+- Output raw HTML only. Start with <!DOCTYPE html>. No markdown, no fences, no explanation.
+- The very last characters must be </html>. Never truncate early — shorten copy first if needed.
+- Never invent data (phone, price, review, URL, hours) not in the brief or research.
+- Zero emoji. SVG icons only.
+- All CSS is in the injected <style> block — do not write any additional CSS.
+- One <script> tag at end of body for all JS.
+- Zero external JS libraries.
+
+INLINE JS (one <script> at end of <body>):
+1. IntersectionObserver: document.querySelectorAll('.fade-up').forEach(el=>{new IntersectionObserver(([e])=>{if(e.isIntersecting){e.target.classList.add('visible')}},{threshold:.15}).observe(el)})
+2. Nav scroll: window.addEventListener('scroll',()=>document.querySelector('nav').classList.toggle('scrolled',scrollY>50))
+3. Hamburger: wire .hamburger button to toggle .mobile-menu.open and aria-expanded
+4. Mobile menu: close on any link click inside .mobile-menu
+5. Count-up: only if .count-up elements exist in the page`;
+
+  const pass2User = `BUILD THIS SITE using the design system classes. Write HTML only.
+
+── BUSINESS ─────────────────────────────────────────────
 Name: ${p.businessName || "Local Business"}
 Owner: ${p.ownerName || "the owner"}
-Type: ${typeLabel} (${p.subType || "general"})
-Industry: ${p.industry || ""}
-Founded: ${p.foundedYear ? `Est. ${p.foundedYear}` : ""}
-Tagline: ${p.tagline || ""}
+Type: ${typeLabel} (${subType})
+${p.foundedYear  ? `Founded: Est. ${p.foundedYear}` : ""}
+${p.tagline      ? `Tagline: ${p.tagline}` : ""}
 City: ${p.city || "our community"}${p.neighborhood ? ` · ${p.neighborhood}` : ""}
 Address: ${p.address || ""}
-Phone: ${p.phone || ""}${p.email ? ` · Email: ${p.email}` : ""}
-Hours: ${p.hours || ""}${p.instagram ? `\nInstagram: @${p.instagram.replace("@", "")}` : ""}
-${logoUrl ? `\nLOGO: ${logoUrl}
-${logoUrl.endsWith(".svg")
-  ? `This is an SVG logo. Use it as <img src="${logoUrl}"> in the nav (height: 55px) and footer (height: 70px). Extract its colors and build the entire palette around them.`
-  : `This is a raster logo (PNG/JPG).
-NAV: Do NOT use the raster image in the nav — it will look blurry at small sizes. Instead, recreate the business name as a bold styled text wordmark in the nav using the brand color. Keep it clean and confident.
-FOOTER: Display the logo image <img src="${logoUrl}"> at a larger size (120-160px wide) where it will look acceptable.`
-}` : ""}
+Phone: ${p.phone || ""}
+${p.email        ? `Email: ${p.email}` : ""}
+Hours: ${p.hours || ""}
+${p.instagram    ? `Instagram: @${p.instagram.replace("@","")}` : ""}
 
+── LOGO ──────────────────────────────────────────────────
+${logoUrl
+  ? logoUrl.endsWith(".svg")
+    ? `SVG logo: <img src="${logoUrl}" alt="${p.businessName} logo" style="height:55px"> in nav + <img src="${logoUrl}" alt="${p.businessName} logo" style="height:70px"> in footer`
+    : `Raster logo: footer only → <img src="${logoUrl}" alt="${p.businessName} logo" style="width:140px">
+Nav: text wordmark "${p.businessName}" with class="nav-logo"`
+  : `No logo. Nav: <a href="#home" class="nav-logo">${p.businessName}</a>`}
+
+── COLORS ────────────────────────────────────────────────
 ${colorInstruction}
+The design system :root already has --brand set correctly. Do not override CSS variables.
 
-ABOUT THIS BUSINESS:
-${p.description || ""}
-${p.differentiator ? `\nWhat makes them different: ${p.differentiator}` : ""}
-${p.about ? `\nOrigin story: ${p.about}` : ""}
+── VIBE ──────────────────────────────────────────────────
+"${p.vibe || "Warm, welcoming, community-first"}"
+${subType === "funeralhome" ? "TONE: Dignified, restrained, warm. No energetic CTAs. Families are grieving." : ""}
+${subType === "church"      ? "LAYOUT: Section 3 = worship times + programs. Contact warmly invites new visitors." : ""}
 
-CONTENT FROM OWNER:
-${p.typeSpecific || "(no additional content provided)"}
-
-WRITING DIRECTION:
-${p.ownerName    ? `- Use "${p.ownerName}" by name in the about section — personal, not corporate` : ""}
-${p.foundedYear  ? `- Weave in the founding year naturally: "serving ${p.city || "the community"} since ${p.foundedYear}"` : ""}
-${p.neighborhood ? `- Use the neighborhood (${p.neighborhood}) in the community section for hyper-local feel` : ""}
-${p.differentiator ? `- Lead with the differentiator ("${p.differentiator}") in the hero or first visible section` : ""}
-${p.instagram    ? `- Link @${p.instagram.replace("@", "")} in footer and contact section` : ""}
-
-VIBE: "${p.vibe || "Warm, welcoming, community-first"}"
-This is the most important design instruction. Let it drive every font and spacing decision.
-Color is already locked above — do not deviate from those rules.
-${p.subType === "funeralhome" ? "\nTONE OVERRIDE: Funeral home. Dignified, restrained, warm throughout. No bold animations, no aggressive CTAs. Families are grieving." : ""}
-${p.subType === "church"     ? "\nLAYOUT OVERRIDE: House of worship. Section 3 is worship times + programs, not a services grid. Contact invites new visitors warmly." : ""}
-
-LAYOUT ARCHETYPE:
+── LAYOUT ────────────────────────────────────────────────
 ${typeLayout}
 
-PHOTOS:
+── ABOUT ─────────────────────────────────────────────────
+${p.description || ""}
+${p.differentiator ? `Differentiator (lead with this in hero or first section): ${p.differentiator}` : ""}
+${p.about          ? `Origin story: ${p.about}` : ""}
+${p.ownerName      ? `Use "${p.ownerName}" by name in about — personal, not corporate.` : ""}
+${p.foundedYear    ? `Weave in "serving ${p.city||"the community"} since ${p.foundedYear}" naturally.` : ""}
+${p.neighborhood   ? `Use "${p.neighborhood}" for hyper-local feel.` : ""}
+
+── OWNER CONTENT ────────────────────────────────────────
+${p.typeSpecific || "(none provided)"}
+
+── PHOTOS ───────────────────────────────────────────────
 ${photoLayout}
 
-RESEARCH FINDINGS:
-${noResearch
-  ? "Not found online. This is their internet debut. Do not reference any ratings, reviews, or platforms."
-  : `${researchFindings}
+── RESEARCH & SOCIAL PROOF ──────────────────────────────
+${researchBlock}
 
-Usage rules: quotes verbatim with attribution · URLs exactly as found, never invented · ratings prominently placed · press/awards mentioned · if existing site found, note this is an upgrade`}
-
-${testimonialsInstruction}
-
-CONTENT SECTION (section 3):
+── CONTENT SECTION (section 3) ─────────────────────────
 ${typeContent}
 
-CONTACT SECTION (section 6):
-${contactSection}`;
+── CONTACT SECTION ──────────────────────────────────────
+${contactSection}
 
-  // ── HTML Generation ────────────────────────────────────────────
+── SEO ──────────────────────────────────────────────────
+<title>: "${p.businessName} — ${p.industry || typeLabel} in ${p.city || "New York"}"
+<meta name="description">: 150-160 chars, business name + service + city + differentiator
+JSON-LD in <head>: @type ${p.businessType === "restaurant" ? "Restaurant" : p.businessType === "retail" ? "Store" : "LocalBusiness"}, name, address, telephone${p.hours ? ", openingHours" : ""}
+<h1> includes city naturally. City name appears 3-4× total.
+Every <img> has descriptive alt with business name and city.
+
+── SECTION ORDER ────────────────────────────────────────
+1. <head> with title, meta, JSON-LD, viewport, charset, and THIS EXACT style block injected verbatim
+2. <nav>
+3. <section id="home"> hero${research?.rating ? ` — MUST include <div class="rating-badge">★ ${research.rating}</div> below tagline` : ""}
+4. ${research?.rating ? `<div class="proof-bar"> with rating` : "<!-- no proof bar — no verified rating -->"}
+5. Content section (services/menu/specials)
+6. <section id="about">
+7. ${research?.reviews?.length >= 2 ? `<section id="testimonials"> ← REQUIRED, use exact quotes from research` : "<!-- no testimonials — fewer than 2 verified reviews -->"}
+8. Contact section
+9. <footer>
+10. <script> (all JS)
+
+── INJECT THIS STYLE BLOCK VERBATIM INTO <head> ─────────
+${designSystem}`;
+
+  console.log(`[${orderId}] Pass 2: HTML generation`);
+
+  const pass2Data = await callClaude({
+    model: "claude-opus-4-5",
+    max_tokens: 14000,
+    system: pass2System,
+    messages: [{ role: "user", content: pass2User }],
+  });
+
+  let html = (pass2Data.content?.find(b => b.type === "text")?.text || "")
+    .replace(/^```html?\n?/i, "").replace(/\n?```$/m, "").trim();
+
+  // Truncation guard
+  if (pass2Data.stop_reason === "max_tokens") {
+    console.warn(`[${orderId}] Pass 2 truncated — repairing`);
+    const lf  = html.lastIndexOf("</footer>");
+    const ls  = html.lastIndexOf("</section>");
+    const cut = lf > ls ? lf + 9 : ls + 10;
+    if (cut > 1000) html = html.slice(0, cut) + "\n</body>\n</html>";
+  }
+
+  console.log(`[${orderId}] Pass 2 done. HTML: ${html.length} chars, stop: ${pass2Data.stop_reason}`);
+
+  if (!html || html.length < 500) {
+    return res.status(500).json({ error: "AI returned empty response" });
+  }
+
+  // ── Validation + surgical patching ────────────────────────────
   try {
-    console.log(`[${orderId}] Starting HTML generation`);
+    const valData = await callClaude({
+      model: "claude-sonnet-4-5",
+      max_tokens: 800,
+      messages: [{
+        role: "user",
+        content: `Quality-check this website HTML for invented data and missing research.
 
-    const genRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": anthropicKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-opus-4-5",
-        max_tokens: 16000,
-        system: systemPrompt,
-        messages: [{ role: "user", content: userPrompt }],
-      }),
-    });
+OWNER PROVIDED:
+- Phone: ${p.phone || "NONE"}
+- Email: ${p.email || "NONE"}
+- Hours: ${p.hours || "NONE"}
+- Prices: ${p.typeSpecific?.includes("price") ? "some provided" : "NONE"}
 
-    if (!genRes.ok) {
-      const errText = await genRes.text();
-      console.error(`[${orderId}] Anthropic error:`, errText.slice(0, 300));
-      return res.status(500).json({ error: `Anthropic error ${genRes.status}` });
-    }
-
-    const data = await genRes.json();
-    let html = (data.content?.find(b => b.type === "text")?.text || "")
-      .replace(/^```html?\n?/i, "")
-      .replace(/\n?```$/m, "")
-      .trim();
-
-    // FIX 5: Truncation guard
-    if (data.stop_reason === "max_tokens") {
-      console.warn(`[${orderId}] Output truncated at max_tokens — attempting repair`);
-      // Trim to last complete closing tag so the page isn't broken mid-element
-      const lastFooter  = html.lastIndexOf("</footer>");
-      const lastSection = html.lastIndexOf("</section>");
-      const cutAt = lastFooter > lastSection ? lastFooter + 9 : lastSection + 10;
-      if (cutAt > 1000) {
-        html = html.slice(0, cutAt) + "\n</body>\n</html>";
-        console.log(`[${orderId}] Repaired truncated HTML at char ${cutAt}`);
-      }
-    }
-
-    console.log(`[${orderId}] Generation done. Tokens: ${data.usage?.output_tokens}, HTML: ${html.length} chars, stop: ${data.stop_reason}`);
-
-    if (!html || html.length < 500) {
-      return res.status(500).json({ error: "AI returned empty response" });
-    }
-
-    // ── FIX 4: Expanded validation + surgical patching ─────────
-    try {
-      console.log(`[${orderId}] Running validation pass`);
-
-      const validationRes = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": anthropicKey,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-5",
-          max_tokens: 800,
-          messages: [{
-            role: "user",
-            content: `You are a quality checker for a website generator. Review this HTML and check for invented data.
-
-WHAT THE OWNER PROVIDED:
-- Business name: ${p.businessName || ""}
-- Phone: ${p.phone || "NONE PROVIDED"}
-- Email: ${p.email || "NONE PROVIDED"}
-- Address: ${p.address || "NONE PROVIDED"}
-- Hours: ${p.hours || "NONE PROVIDED"}
-- Prices: ${p.typeSpecific?.includes("price") ? "some prices provided" : "NO PRICES PROVIDED"}
-
-VERIFIED RESEARCH DATA:
+VERIFIED RESEARCH:
 ${researchFindings || "none"}
 
-HTML TO CHECK (first 4000 chars):
-${html.slice(0, 4000)}
+HTML (first 4000 chars): ${html.slice(0, 4000)}
 
-Check for these specific issues:
-1. PHONE: Does any phone number in the HTML differ from "${p.phone || "NONE"}"?
-2. PRICES: Are dollar amounts shown that were not in owner content or research?
-3. REVIEWS: Are review quotes shown that don't appear in the research data?
-4. LINKS: Are delivery/booking URLs shown that look invented (not in research)?
-5. HOURS: Do displayed hours differ from "${p.hours || "NONE PROVIDED"}"?
-6. EMAIL: Does any email differ from "${p.email || "NONE"}"?
-7. COLOR: If brand color is "${brandColor || "none"}", does the site look like it matches that color (not a completely different hue like pink when brand is orange)?
+Check:
+1. PHONE — any number differing from "${p.phone || "NONE"}"?
+2. PRICES — dollar amounts not in owner content or research?
+3. REVIEWS — quotes not in research data?
+4. LINKS — delivery/booking URLs not found in research?
+5. HOURS — hours differing from "${p.hours || "NONE"}"?
+6. EMAIL — email differing from "${p.email || "NONE"}"?
+7. COLOR — brand is "${brandColor || "none"}". Is the site a completely wrong hue (e.g. pink when brand is orange)?
+8. RESEARCH_MISSING — rating "${research?.rating || "none"}" NOT visible in HTML? OR verified testimonials missing?
 
-Respond with ONLY one of:
+Respond ONLY:
 PASS
-ISSUES: phone | prices | reviews | links | hours | email | color (list only the categories that have problems, pipe-separated)`,
-          }],
-        }),
-      });
+or
+ISSUES: [pipe-separated list of failing categories from: phone | prices | reviews | links | hours | email | color | research_missing]`,
+      }],
+    });
 
-      if (validationRes.ok) {
-        const valData  = await validationRes.json();
-        const valResult = valData.content?.find(b => b.type === "text")?.text?.trim() || "PASS";
-        console.log(`[${orderId}] Validation: ${valResult}`);
+    const valResult = valData.content?.find(b => b.type === "text")?.text?.trim() || "PASS";
+    console.log(`[${orderId}] Validation: ${valResult}`);
 
-        if (valResult.startsWith("ISSUES:")) {
-          const issues = valResult.replace("ISSUES:", "").split("|").map(s => s.trim().toLowerCase());
-          console.warn(`[${orderId}] Patching issues: ${issues.join(", ")}`);
+    if (valResult.startsWith("ISSUES:")) {
+      const issues = valResult.replace("ISSUES:", "").split("|").map(s => s.trim().toLowerCase());
+      console.warn(`[${orderId}] Patching: ${issues.join(", ")}`);
 
-          // Patch JSON-LD schema fields
-          if (issues.includes("prices")) {
-            html = html.replace(/"priceRange"\s*:\s*"[^"]*"/g, '"priceRange": "Contact for pricing"');
-          }
-          if (issues.includes("hours") && !p.hours) {
-            html = html.replace(/"openingHours"\s*:\s*(\[[^\]]*\]|"[^"]*")\s*,?/g, "");
-          } else if (issues.includes("hours") && p.hours) {
-            html = html.replace(/"openingHours"\s*:\s*(\[[^\]]*\]|"[^"]*")/g, `"openingHours": "${p.hours}"`);
-          }
-          if (issues.includes("phone") && p.phone) {
-            html = html.replace(/"telephone"\s*:\s*"[^"]*"/g, `"telephone": "${p.phone}"`);
-            // Also fix tel: links in the body
-            html = html.replace(/href="tel:[^"]*"/g, `href="tel:${p.phone}"`);
-          }
-          if (issues.includes("email") && !p.email) {
-            // Remove mailto: links if no email was provided
-            html = html.replace(/<a\s+href="mailto:[^"]*"[^>]*>[^<]*<\/a>/gi, "");
-          }
-          if (issues.includes("links")) {
-            // Remove DoorDash/UberEats/etc links that weren't in research
-            const deliveryDomains = ["doordash.com", "ubereats.com", "grubhub.com", "seamless.com"];
-            for (const domain of deliveryDomains) {
-              if (!researchFindings.includes(domain)) {
-                html = html.replace(new RegExp(`<a[^>]*href="https?://[^"]*${domain}[^"]*"[^>]*>.*?<\\/a>`, "gis"), "");
-              }
-            }
-          }
+      if (issues.includes("prices"))
+        html = html.replace(/"priceRange"\s*:\s*"[^"]*"/g, '"priceRange": "Contact for pricing"');
 
-          // FIX 4: Color patch — if color was flagged, inject a CSS override
-          if (issues.includes("color") && brandColor) {
-            console.log(`[${orderId}] Injecting color correction for ${brandColor}`);
-            const colorOverride = `\n<style>
-  /* Color correction override — brand color: ${brandColor} */
-  :root { --brand: ${brandColor}; --brand-dark: color-mix(in srgb, ${brandColor} 70%, #000); }
-  a, .btn-primary, button[type="submit"],
-  [class*="btn"]:not([class*="secondary"]):not([class*="outline"]) {
-    background-color: ${brandColor} !important;
-    border-color: ${brandColor} !important;
-  }
-  h1 em, h2 em, .accent, .highlight, .brand-color { color: ${brandColor} !important; }
-  .nav-link.active, nav a:hover { color: ${brandColor} !important; }
-</style>`;
-            // Inject before </head>
-            html = html.replace("</head>", colorOverride + "\n</head>");
-          }
+      if (issues.includes("hours") && !p.hours)
+        html = html.replace(/"openingHours"\s*:\s*(\[[^\]]*\]|"[^"]*")\s*,?/g, "");
+      else if (issues.includes("hours") && p.hours)
+        html = html.replace(/"openingHours"\s*:\s*(\[[^\]]*\]|"[^"]*")/g, `"openingHours": "${p.hours}"`);
 
-          console.log(`[${orderId}] Patches applied`);
+      if (issues.includes("phone") && p.phone) {
+        html = html.replace(/"telephone"\s*:\s*"[^"]*"/g, `"telephone": "${p.phone}"`);
+        html = html.replace(/href="tel:[^"]*"/g, `href="tel:${p.phone}"`);
+      }
+
+      if (issues.includes("email") && !p.email)
+        html = html.replace(/<a\s+href="mailto:[^"]*"[^>]*>[^<]*<\/a>/gi, "");
+
+      if (issues.includes("links")) {
+        for (const d of ["doordash.com","ubereats.com","grubhub.com","seamless.com"]) {
+          if (!researchFindings?.includes(d))
+            html = html.replace(new RegExp(`<a[^>]*href="https?://[^"]*${d}[^"]*"[^>]*>.*?<\\/a>`,"gis"), "");
         }
       }
-    } catch (e) {
-      console.log(`[${orderId}] Validation pass failed: ${e.message} — continuing`);
-    }
 
-    const htmlB64  = Buffer.from(html, "utf8").toString("base64");
-    const bizSlug  = (p.businessName || "website").toLowerCase().replace(/\s+/g, "-");
+      if (issues.includes("color") && brandColor) {
+        html = html.replace("</head>", `<style>
+/* Brand color correction override */
+:root{--brand:${brandColor};--brand-dark:color-mix(in srgb,${brandColor} 72%,#000);--brand-light:color-mix(in srgb,${brandColor} 70%,#fff)}
+.btn-primary,.nav-cta,.rating-badge{background:${brandColor}!important;border-color:${brandColor}!important}
+.btn-primary:hover,.nav-cta:hover{background:color-mix(in srgb,${brandColor} 72%,#000)!important}
+.eyebrow,.proof-number,.map-link,.nav-logo{color:${brandColor}!important}
+.btn-secondary{color:${brandColor}!important;border-color:${brandColor}!important}
+.service-icon,.contact-icon{background:color-mix(in srgb,${brandColor} 12%,transparent)!important}
+.service-icon svg,.contact-icon svg{stroke:${brandColor}!important}
+input:focus,textarea:focus{border-color:${brandColor}!important}
+</style>\n</head>`);
+      }
 
-    // ── Save to Upstash (72hr TTL) ─────────────────────────────
-    const upstashUrl   = process.env.UPSTASH_REDIS_REST_URL;
-    const upstashToken = process.env.UPSTASH_REDIS_REST_TOKEN;
-    if (upstashUrl && upstashToken) {
-      try {
-        const jobData = Buffer.from(JSON.stringify({
-          htmlB64,
-          businessName: p.businessName,
-          city:         p.city,
-          email:        p.email,
-          packageId:    p.packageId,
-          orderId,
-        })).toString("base64");
+      // Research missing — inject fallback HTML directly
+      if (issues.includes("research_missing") && research) {
+        if (research.rating && !html.includes(research.rating)) {
+          console.log(`[${orderId}] Injecting missing rating badge`);
+          html = html.replace(
+            /(<\/h1>)/i,
+            `$1\n<div class="rating-badge" style="display:inline-flex;align-items:center;gap:.4rem;background:var(--brand,${brandColor||"#c87927"});color:#fff;padding:.3rem .9rem;border-radius:999px;font-weight:700;font-size:.875rem;margin-top:1rem">★ ${research.rating}</div>`
+          );
+        }
 
-        const upstashRes = await fetch(`${upstashUrl}/set/order:${orderId}?ex=259200`, {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${upstashToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ value: jobData }),
-        });
-        console.log(`[${orderId}] Upstash save: ${upstashRes.status}`);
-      } catch (e) {
-        console.error(`[${orderId}] Upstash save error:`, e.message);
+        if (research.reviews.length >= 2 && !html.includes("testimonial-card")) {
+          console.log(`[${orderId}] Injecting missing testimonials section`);
+          const testimonialsHtml = `
+<section id="testimonials" style="padding:5rem 1.25rem;background:var(--bg-secondary,#f7f5f0)">
+  <div style="max-width:1200px;margin:auto;padding:0 1.25rem">
+    <p style="font-size:.8rem;font-weight:600;letter-spacing:.15em;text-transform:uppercase;color:var(--brand,${brandColor||"#c87927"});margin-bottom:.5rem">What People Say</p>
+    <h2 style="font-size:clamp(1.8rem,4vw,3rem);margin-bottom:2.5rem">Real Reviews</h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:2rem">
+      ${research.reviews.map(r => `
+      <div style="background:var(--bg-card,#fff);border-radius:12px;box-shadow:0 2px 16px rgba(0,0,0,.07);padding:2rem">
+        <span style="font-size:4rem;line-height:0;display:block;margin-bottom:.75rem;color:var(--brand,${brandColor||"#c87927"})">"</span>
+        <p style="font-style:italic;line-height:1.75;margin-bottom:1.25rem">${r.quote}</p>
+        <p style="font-weight:600;font-size:.875rem;color:var(--text-secondary,#666)">— ${r.attribution}</p>
+      </div>`).join("")}
+    </div>
+  </div>
+</section>`;
+          const insertAt = html.indexOf(`id="contact"`) > -1
+            ? Math.max(0, html.indexOf(`id="contact"`) - 20)
+            : html.lastIndexOf("<footer");
+          if (insertAt > 0)
+            html = html.slice(0, insertAt) + testimonialsHtml + "\n" + html.slice(insertAt);
+        }
       }
     }
-
-    // ── Owner notification ─────────────────────────────────────
-    const resendKey  = process.env.RESEND_API_KEY;
-    const ownerEmail = process.env.OWNER_EMAIL;
-    const fromEmail  = process.env.FROM_EMAIL || "BlockSite <hello@blocksitebuilder.com>";
-
-    if (resendKey && ownerEmail) {
-      try {
-        await fetch("https://api.resend.com/emails", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${resendKey}`,
-          },
-          body: JSON.stringify({
-            from: fromEmail,
-            to:   ownerEmail,
-            subject: `[BlockSite] Preview — ${p.businessName || "Unknown"} · ${orderId}`,
-            html: `<div style="font-family:sans-serif;padding:24px;max-width:700px">
-              <h2 style="color:#1c1a14;margin:0 0 4px">New Preview Generated</h2>
-              <p style="color:#666;margin:0 0 4px;font-size:14px">Customer has not paid yet. HTML attached.</p>
-              <p style="color:#c4813a;font-size:13px;margin:0 0 20px">Upstash: order:${orderId} · 72hr TTL</p>
-              <p style="color:#888;font-size:12px;margin:0 0 12px">Brand color extracted: <strong style="color:${brandColor || "#999"}">${brandColor || "none"}</strong></p>
-              ${researchFindings
-                ? `<div style="background:#f9f9f9;border-radius:8px;padding:14px;margin-bottom:20px;font-family:monospace;font-size:12px;white-space:pre-wrap;border:1px solid #e2ddd0">${researchFindings.slice(0, 600)}</div>`
-                : `<p style="color:#999;font-style:italic;margin-bottom:20px">No research data found — new business.</p>`}
-              <table style="font-size:14px;border-collapse:collapse;width:100%">
-                ${[
-                  ["Business", p.businessName],
-                  ["Type",    typeLabel],
-                  ["City",    p.city],
-                  ["Phone",   p.phone],
-                  ["Email",   p.email],
-                  ["Address", p.address],
-                  ["Hours",   p.hours],
-                  ["Photos",  `${photoCount} uploaded`],
-                  ["Package", p.packageId],
-                  ["Vibe",    `"${p.vibe}"`],
-                ].map(([k, v], i) =>
-                  `<tr${i % 2 === 1 ? ' style="background:#f9f9f9"' : ""}><td style="padding:7px 8px;font-weight:bold;color:#666;width:110px">${k}</td><td style="padding:7px 8px">${v || "—"}</td></tr>`
-                ).join("")}
-              </table>
-            </div>`,
-            attachments: [{ filename: `${bizSlug}.html`, content: htmlB64 }],
-          }),
-        });
-        console.log(`[${orderId}] Owner notification sent`);
-      } catch (e) {
-        console.error(`[${orderId}] Owner email error:`, e.message);
-      }
-    }
-
-    return res.status(200).json({ htmlB64, orderId });
-
-  } catch (err) {
-    console.error(`[${orderId}] Generation failed:`, err.message);
-    return res.status(500).json({ error: err.message });
+  } catch (e) {
+    console.log(`[${orderId}] Validation failed: ${e.message} — continuing`);
   }
+
+  // ── Deliver ───────────────────────────────────────────────────
+  const htmlB64 = Buffer.from(html, "utf8").toString("base64");
+  const bizSlug = (p.businessName || "website").toLowerCase().replace(/\s+/g, "-");
+
+  // Upstash
+  const upstashUrl   = process.env.UPSTASH_REDIS_REST_URL;
+  const upstashToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (upstashUrl && upstashToken) {
+    try {
+      const payload = Buffer.from(JSON.stringify({
+        htmlB64, businessName: p.businessName, city: p.city,
+        email: p.email, packageId: p.packageId, orderId,
+      })).toString("base64");
+      await fetch(`${upstashUrl}/set/order:${orderId}?ex=259200`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${upstashToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ value: payload }),
+      });
+      console.log(`[${orderId}] Upstash saved`);
+    } catch (e) { console.error(`[${orderId}] Upstash error: ${e.message}`); }
+  }
+
+  // Owner email
+  const resendKey  = process.env.RESEND_API_KEY;
+  const ownerEmail = process.env.OWNER_EMAIL;
+  const fromEmail  = process.env.FROM_EMAIL || "BlockSite <hello@blocksitebuilder.com>";
+  if (resendKey && ownerEmail) {
+    try {
+      await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${resendKey}` },
+        body: JSON.stringify({
+          from: fromEmail, to: ownerEmail,
+          subject: `[BlockSite] Preview — ${p.businessName || "Unknown"} · ${orderId}`,
+          html: `<div style="font-family:sans-serif;padding:24px;max-width:700px">
+            <h2 style="color:#1c1a14;margin:0 0 4px">New Preview Generated</h2>
+            <p style="color:#666;font-size:14px;margin:0 0 4px">Customer has not paid yet.</p>
+            <p style="color:#c4813a;font-size:13px;margin:0 0 8px">Upstash: order:${orderId} · 72hr TTL</p>
+            <p style="font-size:12px;color:#888;margin:0 0 20px">
+              Brand color: <strong style="color:${brandColor||"#999"}">${brandColor||"none"}</strong> ·
+              Rating: <strong>${research?.rating||"none"}</strong> ·
+              Reviews: <strong>${research?.reviews?.length||0}</strong> ·
+              Press: <strong>${research?.press||"none"}</strong>
+            </p>
+            ${researchFindings
+              ? `<div style="background:#f9f9f9;border-radius:8px;padding:14px;margin-bottom:20px;font-family:monospace;font-size:12px;white-space:pre-wrap;border:1px solid #e2ddd0">${researchFindings.slice(0,600)}</div>`
+              : `<p style="color:#999;font-style:italic;margin-bottom:20px">No research found — new business.</p>`}
+            <table style="font-size:14px;border-collapse:collapse;width:100%">
+              ${[["Business",p.businessName],["Type",typeLabel],["City",p.city],["Phone",p.phone],
+                 ["Email",p.email],["Address",p.address],["Hours",p.hours],
+                 ["Photos",`${photoCount} uploaded`],["Package",p.packageId],["Vibe",`"${p.vibe}"`]]
+                .map(([k,v],i)=>`<tr${i%2===1?' style="background:#f9f9f9"':''}><td style="padding:7px 8px;font-weight:bold;color:#666;width:110px">${k}</td><td style="padding:7px 8px">${v||"—"}</td></tr>`)
+                .join("")}
+            </table>
+          </div>`,
+          attachments: [{ filename: `${bizSlug}.html`, content: htmlB64 }],
+        }),
+      });
+      console.log(`[${orderId}] Owner email sent`);
+    } catch (e) { console.error(`[${orderId}] Email error: ${e.message}`); }
+  }
+
+  return res.status(200).json({ htmlB64, orderId });
 }
