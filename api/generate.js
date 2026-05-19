@@ -37,6 +37,40 @@ export default async function handler(req, res) {
   const sitePhotos = isLogoFirst ? photoUrls.slice(1) : photoUrls;
   const sitePhotoCount = isLogoFirst ? photoCount - 1 : photoCount;
 
+  // ── Extract dominant brand color from logo ─────────────────────
+  // Runs in parallel with research. Samples pixels, skips near-black/white,
+  // returns the most saturated color as a hex string.
+  let brandColor = null;
+  if (logoUrl && !logoUrl.endsWith(".svg")) {
+    try {
+      const imgRes = await fetch(logoUrl);
+      const buf = Buffer.from(await imgRes.arrayBuffer());
+      // Simple PNG/JPEG pixel sampler — read raw bytes to find dominant hue
+      // We look for the most saturated non-neutral pixel across a grid sample
+      let bestH = 0, bestS = 0, bestR = 128, bestG = 128, bestB = 128;
+      // Sample every ~20th byte triplet from the raw buffer (rough but fast)
+      const stride = Math.max(3, Math.floor(buf.length / 500) * 3);
+      for (let i = 0; i < buf.length - 2; i += stride) {
+        const r = buf[i], g = buf[i+1], b = buf[i+2];
+        // Skip near-black, near-white, and near-grey
+        const max = Math.max(r, g, b), min = Math.min(r, g, b);
+        const lightness = (max + min) / 2;
+        if (lightness < 30 || lightness > 220) continue;
+        const saturation = max === 0 ? 0 : (max - min) / max;
+        if (saturation > bestS) {
+          bestS = saturation;
+          bestR = r; bestG = g; bestB = b;
+        }
+      }
+      if (bestS > 0.2) {
+        brandColor = `#${bestR.toString(16).padStart(2,"0")}${bestG.toString(16).padStart(2,"0")}${bestB.toString(16).padStart(2,"0")}`;
+        console.log(`[${orderId}] Extracted brand color: ${brandColor} (saturation: ${bestS.toFixed(2)})`);
+      }
+    } catch(e) {
+      console.log(`[${orderId}] Color extraction failed: ${e.message}`);
+    }
+  }
+
   const photoLayout = sitePhotoCount === 0
     ? "ZERO PHOTOS: Bold typographic design. Large color blocks, oversized type, decorative CSS shapes and lines. Must feel intentionally designed, not empty."
     : sitePhotos.length > 0
@@ -211,20 +245,24 @@ Use an asymmetric masonry-style layout — vary sizes, never an equal grid.`;
         body: JSON.stringify({
           model: "claude-sonnet-4-5",
           max_tokens: 3000,
+          system: "You are a business research tool. Search for the business, then immediately output ONLY the structured data in the format requested. No preamble, no explanation, no markdown. Start your response with 'FOUND:'",
           tools: [{ type: "web_search_20250305", name: "web_search" }],
-          messages: [{ role: "user", content: `Search for "${p.businessName}" in ${p.city || "New York"}. Find real information and return it in this exact format. Be concise — fill in what you find, write "none found" for anything you can't verify.
+          messages: [
+            { role: "user", content: `Search for "${p.businessName}" at ${p.address || ""} ${p.city || "New York"}. Then fill out this form with what you found:
 
 FOUND: yes/no/partial
-RATING: [Google or Yelp rating and review count, e.g. "4.8 stars · 43 reviews on Google"]
-REVIEWS: [2-3 real customer quotes, each on its own line, format: "Quote text" — FirstName, Platform]
-ORDERING_LINKS: [Real DoorDash/UberEats/Grubhub URLs if restaurant, otherwise "n/a"]
-BOOKING_LINKS: [Real booking platform URLs if service business, otherwise "n/a"]
-PRESS: [Any news coverage or awards]
-SOCIAL: [Instagram handle and follower count if found]
-HISTORY: [How long open, any notable history]
+RATING: [e.g. "4.8 stars · 43 Google reviews" or "none found"]
+REVIEWS: [2-3 real quotes, format: "Quote" — Name, Platform. Or "none found"]
+ORDERING_LINKS: [real URLs only, or "n/a"]
+BOOKING_LINKS: [real URLs only, or "n/a"]
+PRESS: [coverage/awards or "none found"]
+SOCIAL: [e.g. "@handle · 517 followers" or "none found"]
+HISTORY: [founding year, history or "none found"]
 HAS_WEBSITE: yes/no
 
-CRITICAL: Only include verified facts. Never invent reviews, ratings, or URLs. If you cannot find this business say FOUND: no and stop.` }],
+Never invent data. Only verified facts.` },
+            { role: "assistant", content: "FOUND:" }
+          ],
         }),
       });
       if (!researchRes.ok) {
@@ -232,8 +270,9 @@ CRITICAL: Only include verified facts. Never invent reviews, ratings, or URLs. I
         return "";
       }
       const data = await researchRes.json();
-      const text = data.content?.find(b => b.type === "text")?.text || "";
-      console.log(`[${orderId}] Research complete: ${text.slice(0, 100)}`);
+      const rawText = data.content?.find(b => b.type === "text")?.text || "";
+      const text = rawText ? "FOUND:" + rawText : "";
+      console.log(`[${orderId}] Research complete: ${text.slice(0, 150)}`);
       return text;
     } catch(e) {
       console.log(`[${orderId}] Research failed: ${e.message} — continuing without`);
@@ -287,9 +326,11 @@ ANIMATIONS (every generation):
 - Stats/numbers: count-up animation on scroll
 
 LOGO & BRANDING:
-- If a LOGO URL is provided, use it as an <img> tag in the nav (height: 50-60px) and footer (height: 70px). Never use text wordmark when a logo image is provided.
-- Extract the logo's dominant colors and build the entire color palette around them. The site should feel like it belongs to the same brand as the logo.
-- Never invent a logo or use a placeholder when a real logo URL is given.
+- If a LOGO URL is provided and ends in .svg: use it as an <img> tag in nav (height: 50-60px) and footer (height: 70px).
+- If a LOGO URL is provided but is NOT an SVG (jpg/png/webp): display it in the nav and footer but also note that raster logos may appear blurry at small sizes. Use it anyway.
+- Extract the logo's dominant colors carefully — orange (#c87927 or similar warm orange) must not be rendered as yellow. When in doubt, use a rich warm orange (#c87927) not a golden yellow.
+- Build the entire site color palette around the logo colors. The site must feel like it belongs to the same brand.
+- If no logo is provided, use the business name as a styled text wordmark in the nav.
 
 ICONS — CRITICAL. Every service card icon must be semantically correct. Use these SVG path descriptions as guidance:
 
@@ -357,7 +398,14 @@ City: ${p.city || "our community"}${p.neighborhood ? ` · ${p.neighborhood}` : "
 Address: ${p.address || ""}
 Phone: ${p.phone || ""}${p.email ? ` · Email: ${p.email}` : ""}
 Hours: ${p.hours || ""}${p.instagram ? `\nInstagram: @${p.instagram.replace("@", "")}` : ""}
-${logoUrl ? `\nLOGO: ${logoUrl}\nIMPORTANT: Use this logo image in the nav and footer. Extract its colors and build the site palette around them.` : ""}
+${logoUrl ? `\nLOGO: ${logoUrl}
+${logoUrl.endsWith(".svg")
+  ? `This is an SVG logo. Use it as <img src="${logoUrl}"> in the nav (height: 55px) and footer (height: 70px). Extract its colors and build the entire palette around them.`
+  : `This is a raster logo (PNG/JPG). ${brandColor ? `The dominant brand color extracted from it is exactly ${brandColor} — use this as the primary accent color throughout the entire site.` : "Extract the dominant color and use it as the primary accent."}
+NAV: Do NOT use the raster image in the nav — it will look blurry at small sizes. Instead, recreate the business name as a bold styled text wordmark in the nav using the brand color. Keep it clean and confident.
+FOOTER: Display the logo image <img src="${logoUrl}"> at a larger size (120-160px wide) where it will look acceptable.
+The site palette must still feel brand-matched — use the extracted color as the primary accent everywhere.`
+}` : ""}
 
 ABOUT THIS BUSINESS:
 ${p.description || ""}
@@ -491,8 +539,43 @@ Be strict. A phone number formatted differently is fine. A completely different 
 
         if (valResult.startsWith("ISSUES:")) {
           console.warn(`[${orderId}] Validation flagged issues: ${valResult}`);
-          // Log but don't block — we note it in the owner email
-          // Future: auto-fix pass here
+          // Auto-fix: ask Claude to correct the specific issues
+          try {
+            const fixRes = await fetch("https://api.anthropic.com/v1/messages", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "x-api-key": anthropicKey, "anthropic-version": "2023-06-01" },
+              body: JSON.stringify({
+                model: "claude-sonnet-4-5",
+                max_tokens: 16000,
+                messages: [{ role: "user", content: `Fix ONLY the following issues in this HTML. Make NO other changes.
+
+ISSUES TO FIX:
+${valResult.replace("ISSUES:", "").trim()}
+
+CORRECT DATA:
+- Phone: ${p.phone || "remove any phone not matching this"}
+- Hours: ${p.hours || "remove any invented hours"}
+- Email: ${p.email || "remove any email not matching this"}
+- Prices: only show prices the owner provided
+- Reviews: only show reviews from the research data
+
+Return the complete corrected HTML. Raw HTML only, no explanation.
+
+HTML:
+${html}` }],
+              }),
+            });
+            if (fixRes.ok) {
+              const fixData = await fixRes.json();
+              const fixedHtml = fixData.content?.find(b => b.type === "text")?.text?.replace(/^```html?\n?/i, "").replace(/\n?```$/m, "").trim();
+              if (fixedHtml && fixedHtml.length > 500) {
+                html = fixedHtml;
+                console.log(`[${orderId}] Auto-fix applied successfully`);
+              }
+            }
+          } catch(fixErr) {
+            console.log(`[${orderId}] Auto-fix failed: ${fixErr.message} — using original`);
+          }
         }
       }
     } catch(e) {
