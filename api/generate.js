@@ -30,21 +30,28 @@ export default async function handler(req, res) {
   const photoUrls = p.photoUrls || []; // Real hosted URLs from Vercel Blob
   const photoCount = p.photoCount || photoUrls.length || 0;
 
-  const photoLayout = photoCount === 0
+  // Detect if first photo is a logo (SVG or URL contains logo/brand keywords)
+  const firstUrl = photoUrls[0] || "";
+  const isLogoFirst = firstUrl.endsWith(".svg") || /logo|brand|icon/i.test(firstUrl);
+  const logoUrl = isLogoFirst ? firstUrl : null;
+  const sitePhotos = isLogoFirst ? photoUrls.slice(1) : photoUrls;
+  const sitePhotoCount = isLogoFirst ? photoCount - 1 : photoCount;
+
+  const photoLayout = sitePhotoCount === 0
     ? "ZERO PHOTOS: Bold typographic design. Large color blocks, oversized type, decorative CSS shapes and lines. Must feel intentionally designed, not empty."
-    : photoUrls.length > 0
+    : sitePhotos.length > 0
     ? (() => {
-        const heroUrl = photoUrls[0];
-        const galleryUrls = photoUrls.slice(1, 4);
-        if (photoUrls.length === 1) {
+        const heroUrl = sitePhotos[0];
+        const galleryUrls = sitePhotos.slice(1, 4);
+        if (sitePhotos.length === 1) {
           return `ONE PHOTO: Use this exact URL as the hero background image: ${heroUrl}
 Include it as: style="background-image: url('${heroUrl}')" with a dark overlay. Do not use it elsewhere.`;
-        } else if (photoUrls.length === 2) {
+        } else if (sitePhotos.length === 2) {
           return `TWO PHOTOS: 
 Hero background: style="background-image: url('${heroUrl}')" with dark overlay.
 About section: <img src="${galleryUrls[0]}" alt="..."> in an editorial 50/50 split — photo left, text right on desktop.`;
         } else {
-          return `${photoUrls.length} PHOTOS with real hosted URLs:
+          return `${sitePhotos.length} PHOTOS with real hosted URLs:
 Hero background: style="background-image: url('${heroUrl}')" with dark overlay.
 Gallery in about section using these exact URLs:
 ${galleryUrls.map((u, i) => `Photo ${i+2}: <img src="${u}" alt="...">`).join("\n")}
@@ -52,10 +59,9 @@ Use an asymmetric masonry-style layout — vary sizes, never an equal grid.`;
         }
       })()
     : (() => {
-        // photoCount > 0 but no hosted URLs yet — use placeholders as fallback
-        if (photoCount === 1) return `ONE PHOTO: Use HERO_PHOTO_PLACEHOLDER as hero background-image with dark overlay.`;
-        if (photoCount === 2) return `TWO PHOTOS: HERO_PHOTO_PLACEHOLDER as hero background. PHOTO_1_PLACEHOLDER in 50/50 about section split.`;
-        return `${photoCount} PHOTOS: HERO_PHOTO_PLACEHOLDER as hero background. PHOTO_1_PLACEHOLDER through PHOTO_${Math.min(photoCount,4)}_PLACEHOLDER in asymmetric gallery.`;
+        if (sitePhotoCount === 1) return `ONE PHOTO: Use HERO_PHOTO_PLACEHOLDER as hero background-image with dark overlay.`;
+        if (sitePhotoCount === 2) return `TWO PHOTOS: HERO_PHOTO_PLACEHOLDER as hero background. PHOTO_1_PLACEHOLDER in 50/50 about section split.`;
+        return `${sitePhotoCount} PHOTOS: HERO_PHOTO_PLACEHOLDER as hero background. PHOTO_1_PLACEHOLDER through PHOTO_${Math.min(sitePhotoCount,4)}_PLACEHOLDER in asymmetric gallery.`;
       })();
 
   const subType = p.subType || "other";
@@ -204,40 +210,21 @@ Use an asymmetric masonry-style layout — vary sizes, never an equal grid.`;
         },
         body: JSON.stringify({
           model: "claude-sonnet-4-5",
-          max_tokens: 1500,
+          max_tokens: 3000,
           tools: [{ type: "web_search_20250305", name: "web_search" }],
-          messages: [{ role: "user", content: `Search for real information about this local business. Be thorough but fast.
+          messages: [{ role: "user", content: `Search for "${p.businessName}" in ${p.city || "New York"}. Find real information and return it in this exact format. Be concise — fill in what you find, write "none found" for anything you can't verify.
 
-Business: "${p.businessName}"
-Type: ${typeLabel}
-Address: ${p.address || ""}, ${p.city || ""}
-Phone: ${p.phone || ""}
-Search query to use: ${researchQuery}
-
-Find and return ONLY verified facts:
-1. Google rating and review count
-2. 2-3 real review quotes with attribution (first name + platform)
-3. Any press coverage or awards
-4. Real delivery platform URLs if this is a restaurant (DoorDash, UberEats, Grubhub, Seamless)
-5. Real reservation links (OpenTable, Resy) if restaurant
-6. Real booking platform links (Vagaro, StyleSeat, Booksy) if service business
-7. Social media handles and follower counts
-8. How long they've been open / any notable history
-9. Whether they have an existing website
-
-CRITICAL: Only include what you actually found. Never invent reviews, URLs, ratings, or any data.
-If you cannot find this business, say exactly: "BUSINESS NOT FOUND ONLINE"
-
-Format:
 FOUND: yes/no/partial
-RATING: 
-REVIEWS:
-ORDERING_LINKS:
-BOOKING_LINKS:
-PRESS:
-SOCIAL:
-HISTORY:
-HAS_WEBSITE: yes/no` }],
+RATING: [Google or Yelp rating and review count, e.g. "4.8 stars · 43 reviews on Google"]
+REVIEWS: [2-3 real customer quotes, each on its own line, format: "Quote text" — FirstName, Platform]
+ORDERING_LINKS: [Real DoorDash/UberEats/Grubhub URLs if restaurant, otherwise "n/a"]
+BOOKING_LINKS: [Real booking platform URLs if service business, otherwise "n/a"]
+PRESS: [Any news coverage or awards]
+SOCIAL: [Instagram handle and follower count if found]
+HISTORY: [How long open, any notable history]
+HAS_WEBSITE: yes/no
+
+CRITICAL: Only include verified facts. Never invent reviews, ratings, or URLs. If you cannot find this business say FOUND: no and stop.` }],
         }),
       });
       if (!researchRes.ok) {
@@ -299,7 +286,57 @@ ANIMATIONS (every generation):
 - All buttons/cards: hover with scale or shadow, 0.2s ease
 - Stats/numbers: count-up animation on scroll
 
-SECTIONS (every generation, in this order):
+LOGO & BRANDING:
+- If a LOGO URL is provided, use it as an <img> tag in the nav (height: 50-60px) and footer (height: 70px). Never use text wordmark when a logo image is provided.
+- Extract the logo's dominant colors and build the entire color palette around them. The site should feel like it belongs to the same brand as the logo.
+- Never invent a logo or use a placeholder when a real logo URL is given.
+
+ICONS — CRITICAL. Every service card icon must be semantically correct. Use these SVG path descriptions as guidance:
+
+AUTO BODY/COLLISION → car silhouette with crumple damage or wrench overlay
+TOWING → tow truck with hook and chain
+WINDOW TINTING → car window shape with diagonal gradient lines across it
+PAINT/BODY WORK → spray paint gun or paint drip on car panel, NOT a pen nib
+DRIVE-IN CLAIM → clipboard with checkmark or car entering a building
+
+HAIR SALON → scissors (open, diagonal), or comb with curved handle
+BARBERSHOP → straight razor or clippers, or the classic barber pole
+NAIL SALON → nail polish bottle, or hand with painted nails
+BRAIDING/LOCS → interlocking curved lines suggesting a braid pattern
+
+CLEANING SERVICE → spray bottle, or mop and bucket
+LAUNDROMAT → washing machine front-view with circular drum window
+TAILORING → needle and thread, or thimble, or dress form silhouette
+
+CHILDCARE/DAYCARE → two small figures (child) or abc blocks or a simple house with heart
+TUTORING → open book, or pencil with graduation cap, or chalkboard
+
+WELLNESS/MASSAGE → hands in massage position, or lotus flower outline
+FITNESS/GYM → dumbbell
+ACUPUNCTURE → simple needle lines radiating from a point
+
+RESTAURANT/FOOD → fork and knife crossed, or plate with dome cover
+BAKERY → layered cake or croissant outline
+FOOD TRUCK → food truck side-view silhouette
+CATERING → covered serving dish / cloche
+
+FLORIST → single stem flower with leaves
+FUNERAL HOME → simple lily or dove in flight — dignified, never a skull or coffin
+CHURCH/WORSHIP → simple arch doorway or cross (tasteful, not heavy)
+
+PHOTOGRAPHY → camera body with lens circle
+VIDEOGRAPHY → film slate / clapperboard
+
+PHARMACY/DRUG STORE → mortar and pestle, or Rx symbol
+CORNER STORE/BODEGA → storefront awning with door
+GROCERY → shopping basket or fresh produce (apple + leaf)
+BEAUTY SUPPLY → lipstick tube or hand mirror
+
+LAW OFFICE → scales of justice, or gavel
+TAX/NOTARY → document with seal stamp, or calculator
+IMMIGRATION → passport with globe
+
+GENERAL RULE: If a service has a universal recognized symbol (scissors, gavel, camera), use it. Draw it cleanly in SVG — 3-8 path elements max. Never use a generic icon (circles, triangles, generic shapes) that doesn't communicate the service. A wrong icon erodes trust instantly.
 1. <nav> — Fixed. Transparent on hero, solid on scroll. Logo/name left, links right, hamburger mobile. Closes on link click.
 2. <section id="home"> — Hero. Full 100svh. Vibe-matched background. Bold display type. Staggered animation. One strong CTA.
 3. [CONTENT SECTION — see brief]
@@ -320,6 +357,7 @@ City: ${p.city || "our community"}${p.neighborhood ? ` · ${p.neighborhood}` : "
 Address: ${p.address || ""}
 Phone: ${p.phone || ""}${p.email ? ` · Email: ${p.email}` : ""}
 Hours: ${p.hours || ""}${p.instagram ? `\nInstagram: @${p.instagram.replace("@", "")}` : ""}
+${logoUrl ? `\nLOGO: ${logoUrl}\nIMPORTANT: Use this logo image in the nav and footer. Extract its colors and build the site palette around them.` : ""}
 
 ABOUT THIS BUSINESS:
 ${p.description || ""}
