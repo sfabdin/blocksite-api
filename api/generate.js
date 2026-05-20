@@ -371,6 +371,9 @@ ${contactSection}`;
 
       // ── STEP 3: Stream generation ──────────────────────────
       console.log(`[${orderId}] Starting streaming generation`);
+      send({ type: "stage", stage: 2, message: "Designing your layout..." });
+
+      let htmlLength = 0;
 
       const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
@@ -422,6 +425,11 @@ ${contactSection}`;
                 const chunk = event.delta.text;
                 fullHtml += chunk;
                 send({ type: "html", chunk });
+                // Send stage updates at meaningful content milestones
+                const prev = htmlLength;
+                htmlLength = fullHtml.length;
+                if (prev < 3000 && htmlLength >= 3000) send({ type: "stage", stage: 3, message: "Writing your content..." });
+                if (prev < 10000 && htmlLength >= 10000) send({ type: "stage", stage: 4, message: "Adding final details..." });
               }
 
               if (event.type === "message_delta" && event.usage) {
