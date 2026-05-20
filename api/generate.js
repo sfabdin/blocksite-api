@@ -97,16 +97,22 @@ export default async function handler(req) {
     : sitePhotos.length > 0
     ? (() => {
         const heroUrl = sitePhotos[0];
-        const galleryUrls = sitePhotos.slice(1, 4);
+        const remainingUrls = sitePhotos.slice(1);
         if (sitePhotos.length === 1) {
           return `ONE PHOTO: Use this exact URL as hero background: style="background-image: url('${heroUrl}')" with dark overlay.`;
         } else if (sitePhotos.length === 2) {
-          return `TWO PHOTOS:\nHero: style="background-image: url('${heroUrl}')" with dark overlay.\nAbout: <img src="${galleryUrls[0]}" alt=""> in 50/50 editorial split.`;
+          return `TWO PHOTOS — use BOTH:
+Hero background: style="background-image: url('${heroUrl}')" with dark overlay.
+About section: <img src="${remainingUrls[0]}" alt=""> in a 50/50 editorial split.`;
         } else {
-          return `${sitePhotos.length} PHOTOS:\nHero: style="background-image: url('${heroUrl}')" with dark overlay.\nGallery:\n${galleryUrls.map((u, i) => `Photo ${i+2}: <img src="${u}" alt="">`).join("\n")}\nAsymmetric masonry layout — vary sizes.`;
+          return `${sitePhotos.length} PHOTOS — ALL must appear on the site. Every single URL below must be used as an <img> or background-image. No exceptions.
+Hero background: style="background-image: url('${heroUrl}')" with dark overlay.
+Remaining photos — use ALL of these, distributed across gallery, about, and services sections:
+${remainingUrls.map((u, i) => `Photo ${i+2}: <img src="${u}" alt="">`).join("\n")}
+Layout: Use a masonry or asymmetric grid in the gallery section. Vary sizes. If there are more than 4 photos, create a proper photo gallery section with all of them. Do not omit any photo.`;
         }
       })()
-    : `${sitePhotoCount} PHOTOS: Use HERO_PHOTO_PLACEHOLDER as hero background. PHOTO_1_PLACEHOLDER through PHOTO_${Math.min(sitePhotoCount,4)}_PLACEHOLDER in gallery.`;
+    : `${sitePhotoCount} PHOTOS: Use HERO_PHOTO_PLACEHOLDER as hero background. ALL remaining photos PHOTO_1_PLACEHOLDER through PHOTO_${Math.min(sitePhotoCount,6)}_PLACEHOLDER must appear in gallery and about sections. Every placeholder must be used.`;
 
   const subType = p.subType || "other";
 
@@ -268,6 +274,7 @@ ABSOLUTE RULES:
 - Zero emoji anywhere. SVG icons or CSS only.
 - Fully self-contained — all CSS and JS inline, zero external JS libraries.
 - Never close HTML prematurely. If running low on tokens, shorten copy — never skip sections.
+- PHOTOS: Every single uploaded photo URL provided must appear in the HTML as either a background-image or <img> tag. If 6 photos are provided, all 6 must be on the site. Never omit a provided photo.
 
 TECHNICAL:
 - Mobile-first. Perfect at 375px. Adapts to 768px+ desktop.
@@ -293,6 +300,12 @@ Tutoring → open book. Wellness → lotus or hands. Restaurant → fork+knife. 
 Food truck → truck silhouette. Florist → flower stem. Pharmacy → mortar+pestle. Bodega → storefront awning.
 Law → scales of justice. Tax/Notary → document+stamp. Church → arch or cross. Photography → camera.
 RULE: Draw clean SVG — 3-8 path elements. Never use a generic shape that doesn't represent the service.
+
+ATTRIBUTION (required on every site, no exceptions):
+Add this as the very last element before </body>, after the footer:
+<div style="text-align:center;padding:10px;font-family:sans-serif;font-size:11px;color:#999;background:#f9f9f9;border-top:1px solid #eee">
+  Built by <a href="https://blocksitebuilder.com" target="_blank" rel="noopener" style="color:#c4813a;text-decoration:none;font-weight:600">BLOCKSite</a>
+</div>
 
 SECTIONS (in order):
 1. <nav> Fixed. Starts with semi-transparent dark background (never fully transparent — always readable). Becomes solid on scroll. Logo left, links right on desktop, hamburger ONLY on mobile. CRITICAL: The hamburger and mobile menu must be hidden on desktop (display:none above 768px). Never show both desktop links AND hamburger at the same time. Never render two nav bars.
