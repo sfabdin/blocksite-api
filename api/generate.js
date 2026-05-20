@@ -182,7 +182,7 @@ ${isAutoBody ? `Large "Get a Free Estimate" button → tel:${p.phone||""}. Insur
 ${isLegal    ? `Large "Free Consultation" button → tel:${p.phone||""}.` : ""}
 ${isChildcareOrTutor ? `Large "Schedule a Visit" button → tel:${p.phone||""}.` : ""}
 ${!isFuneral && !isChurch && !isCatering && !isAutoBody && !isLegal && !isChildcareOrTutor
-  ? `If research found real booking URL, make "Book Now" the hero CTA. Otherwise phone as primary CTA.` : ""}
+  ? `If research found a real booking URL for this specific business page (not a platform homepage), make "Book Now" the hero CTA with that exact URL. If only a platform homepage was found, use the phone number as the primary CTA instead.` : ""}
 Phone <a href="tel:${p.phone||""}"> prominent. Address + "Get Directions" <a href="https://maps.google.com/?q=${mapsUrl}" target="_blank"> if walk-ins relevant. Hours. Contact form (name, email, message) if email provided.`;
 
   // ── Return stream immediately — all processing happens inside ──
@@ -295,7 +295,7 @@ Law → scales of justice. Tax/Notary → document+stamp. Church → arch or cro
 RULE: Draw clean SVG — 3-8 path elements. Never use a generic shape that doesn't represent the service.
 
 SECTIONS (in order):
-1. <nav> Fixed. Transparent on hero, solid on scroll. Logo left, links right, hamburger mobile.
+1. <nav> Fixed. Starts with semi-transparent dark background (never fully transparent — always readable). Becomes solid on scroll. Logo left, links right on desktop, hamburger ONLY on mobile. CRITICAL: The hamburger and mobile menu must be hidden on desktop (display:none above 768px). Never show both desktop links AND hamburger at the same time. Never render two nav bars.
 2. <section id="home"> Hero. 100svh. Vibe-matched. Bold display type. Staggered animation. One strong CTA.
 3. [CONTENT SECTION]
 4. <section id="about"> Story. Human. Community connection explicit. Pull quote if origin story provided.
@@ -334,6 +334,7 @@ ${p.instagram ? `- Link @${p.instagram.replace("@","")} in footer and contact` :
 
 VIBE: "${p.vibe || "Warm, welcoming, community-first"}"
 This drives every color, font, and spacing decision.
+${p.brandColor ? `BRAND COLOR: The customer selected ${p.brandColor} as their primary brand color. Use this as the dominant accent color throughout the site — buttons, headings, accents, hover states. Build the palette around it.` : ""}
 ${p.subType === "funeralhome" ? "\nTONE: Funeral home. Dignified, restrained. No bold animations, no aggressive CTAs." : ""}
 ${p.subType === "church" ? "\nLAYOUT: Section 3 is worship times + programs. Contact invites warmly." : ""}
 
@@ -355,7 +356,7 @@ RESEARCH USAGE — research-sourced content must make up ~30% of visible page co
 - HISTORY: Lead with it — "Serving the Bronx since 2019" in hero, about, and footer.
 - HAS_WEBSITE: If yes, frame as upgrade in about section.
 - PRESS/AWARDS: Display as trust badge between sections.
-- ORDERING/BOOKING LINKS: Wire real URLs into CTA buttons — never placeholder links when real ones found.
+- ORDERING/BOOKING LINKS: Wire real URLs into CTA buttons — never placeholder links when real ones found. CRITICAL: Use the specific business page URL (e.g. getsquire.com/discover/barbershop/elegant-barbershop-4th-street-brooklyn), never a platform homepage (e.g. never just getsquire.com or vagaro.com). If only the homepage was found, use the phone number as the CTA instead.
 - "none found" fields → skip. Never invent. Use everything found aggressively.`}
 
 ${!noResearch && researchFindings.includes("REVIEWS:") && !researchFindings.includes("REVIEWS: none")
