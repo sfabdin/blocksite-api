@@ -64,9 +64,8 @@ export default async function handler(req, res) {
   };
 
   function emailHeader() {
-    const logoB64 = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxODUwIDM2MCIgcm9sZT0iaW1nIj4KICA8ZGVmcz4KICAgIDxzdHlsZT4KICAgICAgLmlua3tmaWxsOm5vbmU7c3Ryb2tlOiNmYWY4ZjM7c3Ryb2tlLXdpZHRoOjg7c3Ryb2tlLWxpbmVjYXA6cm91bmQ7c3Ryb2tlLWxpbmVqb2luOnJvdW5kfQogICAgICAuaW5rLWZpbGx7ZmlsbDojZmFmOGYzfQogICAgICAuZ29sZC1zdHJva2V7ZmlsbDpub25lO3N0cm9rZTojYzQ4MTNhO3N0cm9rZS13aWR0aDoxMDtzdHJva2UtbGluZWNhcDpyb3VuZDtzdHJva2UtbGluZWpvaW46cm91bmR9CiAgICAgIC53b3JkLWxpZ2h0e2ZvbnQtZmFtaWx5Okdlb3JnaWEsc2VyaWY7Zm9udC1zaXplOjE1MHB4O2ZvbnQtd2VpZ2h0OjcwMDtmaWxsOiNmYWY4ZjN9CiAgICAgIC53b3JkLWdvbGR7Zm9udC1mYW1pbHk6R2VvcmdpYSxzZXJpZjtmb250LXNpemU6MTUwcHg7Zm9udC13ZWlnaHQ6NzAwO2ZpbGw6I2M0ODEzYX0KICAgIDwvc3R5bGU+CiAgPC9kZWZzPgogIDxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDU1IDQ1KSI+CiAgICA8cGF0aCBjbGFzcz0iZ29sZC1zdHJva2UiIGQ9Ik0zNCAxMjggQzM0IDU2IDkxIDEyIDE1OCAxMiBDMjIyIDEyIDI3MCA1NCAyODQgMTExIiAvPgogICAgPHBhdGggY2xhc3M9ImluayIgZD0iTTAgMjU4IEgzMjIiIC8+CiAgICA8cGF0aCBjbGFzcz0Imlua3NoIiBkPSJNMzIgMjU4IFYxNjgiIC8+CiAgICA8cGF0aCBjbGFzcz0iaW5rIiBkPSJNNzQgMjU4IFYxNTggSDE1NiBWMjU4IiAvPgogICAgPHBhdGggY2xhc3M9Imlua3NoIiBkPSJNMTY0IDI1OCBWNJBIIDI0MiBWMjU4IiAvPgogICAgPHBhdGggY2xhc3M9Imlua3NoIiBkPSJNMjQyIDI1OCBWMTI5IEgzMDAgVjI1OCIgLz4KICA8L2c+CiAgPHRleHQgeD0iNDg1IiB5PSIxOTAiIGNsYXNzPSJ3b3JkLWxpZ2h0Ij5CTE9DSzx0c3BhbiBjbGFzcz0id29yZC1nb2xkIj5TaXRlPC90c3Bhbj48L3RleHQ+Cjwvc3ZnPg==";
     return `<div style="background:#1c1a14;padding:28px 32px;border-radius:12px 12px 0 0;text-align:center">
-      <img src="${logoB64}" alt="BlockSite" height="44" style="height:44px;width:auto;display:inline-block" />
+      <span style="font-family:Georgia,serif;font-size:28px;font-weight:700;color:#faf8f3;letter-spacing:-0.02em">BLOCK<span style="color:#c4813a">Site</span></span>
     </div>`;
   }
 
@@ -80,15 +79,11 @@ export default async function handler(req, res) {
 
   function deploySteps(city = "") {
     return `
-    <div style="background:#fff;border:1px solid #e2ddd0;border-radius:10px;padding:24px;margin-bottom:16px">
-      <p style="margin:0 0 6px;font-size:11px;font-weight:700;color:#c4813a;text-transform:uppercase;letter-spacing:0.08em">Step 1 — Save your website file</p>
-      <p style="margin:0 0 10px;font-size:15px;line-height:1.7">Your website is attached to this email as a <strong>.txt file</strong>. Here's how to open it:</p>
-      <ol style="margin:0;padding-left:20px;font-size:14px;line-height:2;color:#1c1a14">
-        <li>Download the attached file to your Desktop</li>
-        <li>Right-click it → Rename → change <strong>.txt</strong> to <strong>.html</strong></li>
-        <li>Double-click it — your website opens in your browser</li>
-      </ol>
-      <p style="margin:10px 0 0;font-size:13px;color:#a89880;font-style:italic">Email providers block .html files for security — renaming it takes 5 seconds.</p>
+    <div style="background:#fff;border:1px solid #c4813a;border-radius:10px;padding:24px;margin-bottom:16px;text-align:center">
+      <p style="margin:0 0 6px;font-size:11px;font-weight:700;color:#c4813a;text-transform:uppercase;letter-spacing:0.08em">Step 1 — Download your website</p>
+      <p style="margin:0 0 16px;font-size:15px;line-height:1.7">Click the button below to download your website file. Save it to your Desktop.</p>
+      <a href="https://blocksite-api.vercel.app/api/download?orderId=${orderId}" style="display:inline-block;background:#c4813a;color:#fff;font-family:sans-serif;font-size:16px;font-weight:700;padding:14px 32px;border-radius:8px;text-decoration:none">Download My Website →</a>
+      <p style="margin:12px 0 0;font-size:13px;color:#a89880">Double-click the downloaded file to preview it in your browser.</p>
     </div>
     <div style="background:#fff;border:1px solid #e2ddd0;border-radius:10px;padding:24px;margin-bottom:16px">
       <p style="margin:0 0 6px;font-size:11px;font-weight:700;color:#c4813a;text-transform:uppercase;letter-spacing:0.08em">Step 2 — Create a free Netlify account</p>
@@ -132,7 +127,7 @@ export default async function handler(req, res) {
           ${emailFooter()}
         </div>
       </div>`;
-      if (htmlB64) attachments = [{ filename: `${bizSlug}-website.txt`, content: htmlB64, content_type: "text/plain" }]; // Gmail blocks .html — rename to .txt
+      // No attachment — download link in email body instead
 
     } else if (packageId === "support") {
       subject = `Your BlockSite website is ready — ${businessName}`;
@@ -150,7 +145,7 @@ export default async function handler(req, res) {
           ${emailFooter()}
         </div>
       </div>`;
-      if (htmlB64) attachments = [{ filename: `${bizSlug}-website.txt`, content: htmlB64, content_type: "text/plain" }]; // Gmail blocks .html — rename to .txt
+      // No attachment — download link in email body instead
 
     } else {
       // fullservice
@@ -204,7 +199,7 @@ export default async function handler(req, res) {
     const resendRes = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${resendKey}` },
-      body: JSON.stringify({ from: fromEmail, to: customerEmail, subject, html, attachments }),
+      body: JSON.stringify({ from: fromEmail, to: customerEmail, subject, html, attachments: [] }),
     });
     const resendData = await resendRes.json();
     console.log(`[${orderId}] Resend response: ${JSON.stringify(resendData)} · attachments: ${attachments.length}`);
