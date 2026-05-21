@@ -428,6 +428,9 @@ SECTIONS (in order):
     ? `${p.hours}\n  (Use exactly as written in visible text. For JSON-LD openingHours, convert to schema.org format, e.g. "Mo-Fr 09:00-18:00 Sa 10:00-16:00".)`
     : "Not provided — omit from JSON-LD openingHours.";
 
+  // CHANGE v8 +: Instagram handle — strip all leading @ symbols before injecting
+  const instagramHandle = p.instagram ? p.instagram.replace(/^@+/, "") : "";
+
   const userPrompt = `BUSINESS BRIEF:
 Name: ${p.businessName || "Local Business"}
 Owner: ${p.ownerName || "the owner"}
