@@ -54,6 +54,10 @@ export default async function handler(req, res) {
     const businessName = decoded.businessName || "website";
     const bizSlug = businessName.toLowerCase().replace(/\s+/g, "-");
 
+    // Debug — log what keys we actually got so we can diagnose missing htmlB64
+    console.log(`[${orderId}] Decoded keys: ${Object.keys(decoded).join(", ")}`);
+    console.log(`[${orderId}] htmlB64 present: ${!!htmlB64}, length: ${htmlB64?.length || 0}, businessName: ${businessName}`);
+
     if (!htmlB64) {
       return res.status(404).json({ error: "File not found" });
     }
