@@ -50,12 +50,14 @@ export default async function handler(req, res) {
       }
     }
 
-    const htmlB64 = decoded.htmlB64;
-    const businessName = decoded.businessName || "website";
+    // Upstash wraps the stored value in { value: "..." } on retrieval — unwrap it
+    const inner = decoded.value ? JSON.parse(Buffer.from(decoded.value, "base64").toString("utf8")) : decoded;
+
+    const htmlB64 = inner.htmlB64;
+    const businessName = inner.businessName || "website";
     const bizSlug = businessName.toLowerCase().replace(/\s+/g, "-");
 
-    // Debug — log what keys we actually got so we can diagnose missing htmlB64
-    console.log(`[${orderId}] Decoded keys: ${Object.keys(decoded).join(", ")}`);
+    console.log(`[${orderId}] Inner keys: ${Object.keys(inner).join(", ")}`);
     console.log(`[${orderId}] htmlB64 present: ${!!htmlB64}, length: ${htmlB64?.length || 0}, businessName: ${businessName}`);
 
     if (!htmlB64) {
