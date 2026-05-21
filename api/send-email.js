@@ -9,7 +9,8 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const { orderId, packageId, customerEmail } = req.body;
+  // FIX: destructure businessName from request body alongside other fields
+  const { orderId, packageId, customerEmail, businessName: bodyBusinessName } = req.body;
 
   if (!orderId || !packageId || !customerEmail) {
     return res.status(400).json({ error: "Missing orderId, packageId, or customerEmail" });
@@ -55,6 +56,13 @@ export default async function handler(req, res) {
     } catch(e) {
       console.error("Upstash fetch error:", e.message);
     }
+  }
+
+  // FIX: If Upstash didn't have the business name (or had the default),
+  // use the name sent directly from the client as a reliable fallback
+  if ((!businessName || businessName === "Your Business") && bodyBusinessName) {
+    businessName = bodyBusinessName;
+    bizSlug = businessName.toLowerCase().replace(/\s+/g, "-");
   }
 
   const PACKAGE_NAMES = {
@@ -127,7 +135,6 @@ export default async function handler(req, res) {
           ${emailFooter()}
         </div>
       </div>`;
-      // No attachment — download link in email body instead
 
     } else if (packageId === "support") {
       subject = `Your BlockSite website is ready — ${businessName}`;
@@ -145,7 +152,6 @@ export default async function handler(req, res) {
           ${emailFooter()}
         </div>
       </div>`;
-      // No attachment — download link in email body instead
 
     } else {
       // fullservice
