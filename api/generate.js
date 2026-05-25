@@ -356,6 +356,16 @@ RULE: Draw clean SVG — 3-8 path elements. Never use a generic shape that doesn
 
 TECHNICAL:
 - Mobile-first. Perfect at 375px. Adapts to 768px+ desktop.
+- MOBILE SAFETY — these rules are non-negotiable and must appear in every generated stylesheet:
+  * { box-sizing: border-box; min-height: 0; }
+  img { max-width: 100%; height: auto; display: block; }
+  section, div { max-width: 100%; overflow-x: hidden; }
+- Never use overflow:hidden on body or html — it clips content on mobile.
+- Hero section uses 100svh not 100vh (svh accounts for mobile browser address bar chrome).
+- All sections must have explicit padding or min-height — never rely solely on children for height.
+- All grid and flex containers must include a mobile column definition: grid-template-columns:1fr or flex-direction:column at max-width:768px.
+- Never use position:absolute for content that must be visible — only for decorative overlays with pointer-events:none.
+- Test mentally at 375px width before closing any section — if content would collapse to zero height, add padding:40px 20px as a floor.
 - Fonts: https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,700&family=DM+Sans:wght@300;400;500;600&family=Fraunces:ital,wght@0,400;0,700;1,400&family=Lora:ital,wght@0,400;0,600;1,400&display=swap
 - Font pairing: Choose ONE display font and ONE body font from the loaded stack. Assign them as CSS variables --font-display and --font-body. Use ONLY those two variables throughout. Never reference a third font.
 - 2 brand colors + 2 neutrals. Chosen deliberately. No generic blues or grays unless specified.
